@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:pages": "next build",
+    "deploy:pages": "npm run build:pages && npx wrangler pages deploy out --project-name podocenter-crm",
+    "configure:telegram": "node scripts/configure-telegram-bot.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },
@@ -19,6 +22,7 @@
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
+    "@cloudflare/workers-types": "^4.20250813.0",
     "prisma": "^6.19.0",
     "typescript": "^5.7.3"
   }

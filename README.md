@@ -9,6 +9,8 @@ CRM для патологического/подологического цен�
 - Prisma-схема PostgreSQL с филиалами, клиентами, услугами, записями, платежами, зарплатными периодами, корректировками, расходами, арендой, коммунальными платежами и журналом изменений;
 - адаптивная боковая навигация и единый визуальный стиль;
 - `.env.example` с примером подключения к PostgreSQL.
+- Telegram Mini App-обвязка: Telegram WebApp SDK, проверка `initData` в Cloudflare Pages Function и конфигурационный скрипт меню бота;
+- Cloudflare Pages-конфигурация через `wrangler.toml`.
 
 ## Запуск
 
@@ -21,6 +23,26 @@ npm run dev
 ```
 
 Откройте [http://localhost:3000](http://localhost:3000).
+
+## Telegram Mini App и Cloudflare Pages
+
+Сборка для Pages создаётся командой:
+
+```bash
+npm run deploy:pages
+```
+
+Секрет бота хранится только в Cloudflare Pages:
+
+```bash
+npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podocenter-crm
+```
+
+После деплоя настройте кнопку меню бота локально, не добавляя токен в Git:
+
+```bash
+TELEGRAM_BOT_TOKEN="новый-токен" MINI_APP_URL="https://podocenter-crm.pages.dev" npm run configure:telegram
+```
 
 ## Следующий этап
 
