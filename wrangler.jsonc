@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "podologymk-crm",
-  "compatibility_date": "2026-08-10",
+  "compatibility_date": "2026-08-08",
   "vars": {
     "MINI_APP_URL": "https://podologymk-crm.pages.dev"
   },

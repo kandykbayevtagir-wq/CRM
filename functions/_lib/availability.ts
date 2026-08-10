@@ -17,7 +17,7 @@ type AvailabilityParams = {
   excludeAppointmentId?: string;
 };
 
-type TimeRange = { startsTime: string; endsTime: string };
+type TimeRange = { startsTime: string; endsTime: string; breakStartTime?: string | null; breakEndTime?: string | null };
 
 function timeToMinutes(value: string) {
   const [hours, minutes] = value.split(":").map(Number);
@@ -69,8 +69,8 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
 
   const employeeQuery = `
     SELECT e.id, e.full_name AS fullName, b.name AS branchName
-    FROM employees e INNER JOIN branches b ON b.id = e.branch_id
-    WHERE e.is_active = 1 AND e.branch_id = ? ${params.employeeId ? "AND e.id = ?" : ""}
+    FROM employees e INNER JOIN employee_branches eb ON eb.employee_id = e.id INNER JOIN branches b ON b.id = eb.branch_id
+    WHERE e.is_active = 1 AND eb.branch_id = ? ${params.employeeId ? "AND e.id = ?" : ""}
     ORDER BY e.full_name ASC
   `;
   const employees = params.employeeId
@@ -85,7 +85,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   const placeholders = employeeIds.map(() => "?").join(",");
   const [appointments, timeOff, schedules, closures] = await Promise.all([
     db.prepare(`
-      SELECT a.id, a.employee_id AS employeeId, a.starts_at AS startsAt,
+      SELECT a.id, a.employee_id AS employeeId, a.starts_at AS startsAt, a.ends_at AS endsAt,
         COALESCE(SUM(s.duration_minutes * aps.quantity), 60) AS durationMinutes
       FROM appointments a
       LEFT JOIN appointment_services aps ON aps.appointment_id = a.id
@@ -93,15 +93,15 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
       WHERE a.employee_id IN (${placeholders}) AND a.starts_at >= ? AND a.starts_at <= ?
         AND a.status NOT IN ('CANCELLED', 'NO_SHOW') ${params.excludeAppointmentId ? "AND a.id <> ?" : ""}
       GROUP BY a.id
-    `).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ id: string; employeeId: string; startsAt: string; durationMinutes: number }>(),
+    `).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ id: string; employeeId: string; startsAt: string; endsAt: string | null; durationMinutes: number }>(),
     db.prepare(`SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE employee_id IN (${placeholders}) AND starts_at < ? AND ends_at > ?`).bind(...employeeIds, dateEnd, dateStart).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
-    db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string }>(),
+    db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
     db.prepare("SELECT branch_id AS branchId, starts_at AS startsAt, ends_at AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND starts_at < ? AND ends_at > ?").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
   ]);
 
   const schedulesByEmployee = new Map<string, TimeRange>();
   for (const schedule of schedules.results ?? []) schedulesByEmployee.set(schedule.employeeId, schedule);
-  const appointmentsByEmployee = new Map<string, Array<{ startsAt: string; durationMinutes: number }>>();
+  const appointmentsByEmployee = new Map<string, Array<{ startsAt: string; endsAt: string | null; durationMinutes: number }>>();
   for (const appointment of appointments.results ?? []) {
     const rows = appointmentsByEmployee.get(appointment.employeeId) ?? [];
     rows.push(appointment);
@@ -115,7 +115,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   }
   const now = Date.now();
   const slots: AvailabilitySlot[] = [];
-  const defaultRange: TimeRange = { startsTime: String(settings?.startTime ?? "09:00"), endsTime: String(settings?.endTime ?? "18:00") };
+  const defaultRange: TimeRange = { startsTime: String(settings?.startTime ?? "09:00"), endsTime: String(settings?.endTime ?? "18:00"), breakStartTime: null, breakEndTime: null };
   const interval = Math.max(15, Number(settings?.slotInterval ?? 30));
   const duration = Math.max(15, Number(service.durationMinutes ?? 60));
 
@@ -133,9 +133,14 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
       if (startMs <= now + 5 * 60_000) continue;
       if ((closures.results ?? []).some((closure) => new Date(closure.startsAt).getTime() < endMs && new Date(closure.endsAt).getTime() > startMs)) continue;
       if (employeeTimeOff.some((item) => new Date(item.startsAt).getTime() < endMs && new Date(item.endsAt).getTime() > startMs)) continue;
+      if (range.breakStartTime && range.breakEndTime) {
+        const breakStart = isoAt(params.date, timeToMinutes(range.breakStartTime), timezone);
+        const breakEnd = isoAt(params.date, timeToMinutes(range.breakEndTime), timezone);
+        if (new Date(breakStart).getTime() < endMs && new Date(breakEnd).getTime() > startMs) continue;
+      }
       if (employeeAppointments.some((appointment) => {
         const existingStart = new Date(appointment.startsAt).getTime();
-        const existingEnd = existingStart + Number(appointment.durationMinutes || 60) * 60_000;
+        const existingEnd = appointment.endsAt ? new Date(appointment.endsAt).getTime() : existingStart + Number(appointment.durationMinutes || 60) * 60_000;
         return existingStart < endMs && existingEnd > startMs;
       })) continue;
       slots.push({ startsAt, endsAt, employeeId: employee.id, employeeName: employee.fullName, branchId: params.branchId, branchName: employee.branchName, serviceId: service.id, price: Number(service.price || 0) });

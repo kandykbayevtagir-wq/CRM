@@ -1,18 +1,20 @@
 "use client";
 
-import { FormEvent, useDeferredValue, useState } from "react";
+import { FormEvent, useDeferredValue, useMemo, useState } from "react";
 import { CalendarDays, Check, Download, Plus, QrCode, ScanLine, Search } from "lucide-react";
 
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState, Modal } from "@/components/data-state";
 import { Amount, Avatar, Button, PageHeader, SectionCard, StatusPill } from "@/components/ui";
-import type { AppointmentRecord, Branch, EmployeeRecord } from "@/lib/crm-types";
+import type { AppointmentRecord, Branch, ClientRecord, EmployeeRecord, ServiceRecord } from "@/lib/crm-types";
 import { dateInputValue, formatDateTime, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
 type AppointmentResponse = { ok: true; items: AppointmentRecord[] };
 type BranchResponse = { ok: true; items: Branch[] };
 type EmployeeResponse = { ok: true; items: EmployeeRecord[] };
+type ClientResponse = { ok: true; items: ClientRecord[]; total: number };
+type ServiceResponse = { ok: true; items: ServiceRecord[] };
 
 function statusKey(status: string) {
   return status.toLowerCase();
@@ -28,11 +30,35 @@ export function AppointmentsView() {
   const [checkInCode, setCheckInCode] = useState("");
   const [checkInMessage, setCheckInMessage] = useState<string | null>(null);
   const [checkInSaving, setCheckInSaving] = useState(false);
+  const [paymentAppointment, setPaymentAppointment] = useState<AppointmentRecord | null>(null);
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [calendarView, setCalendarView] = useState<"today" | "day" | "week">("today");
+  const [selectedDate, setSelectedDate] = useState(dateInputValue(new Date()).slice(0, 10));
+  const [branchFilter, setBranchFilter] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const path = `/api/appointments${deferredQuery.trim() ? `?q=${encodeURIComponent(deferredQuery.trim())}` : ""}`;
+  const calendarRange = useMemo(() => {
+    const start = new Date(`${selectedDate}T00:00:00`);
+    if (calendarView === "week") {
+      const day = start.getDay() || 7;
+      start.setDate(start.getDate() - day + 1);
+    }
+    const end = new Date(start);
+    end.setDate(end.getDate() + (calendarView === "week" ? 7 : 1));
+    return { from: start.toISOString(), to: end.toISOString() };
+  }, [calendarView, selectedDate]);
+  const appointmentParams = new URLSearchParams({ from: calendarRange.from, to: calendarRange.to, pageSize: "200" });
+  if (deferredQuery.trim()) appointmentParams.set("q", deferredQuery.trim());
+  if (branchFilter) appointmentParams.set("branchId", branchFilter);
+  if (employeeFilter) appointmentParams.set("employeeId", employeeFilter);
+  if (statusFilter) appointmentParams.set("status", statusFilter);
+  const path = `/api/appointments?${appointmentParams.toString()}`;
   const { data, loading, error, reload } = useApi<AppointmentResponse>(path);
   const { data: branches } = useApi<BranchResponse>("/api/branches");
   const { data: employees } = useApi<EmployeeResponse>("/api/employees");
+  const { data: clients } = useApi<ClientResponse>("/api/clients?status=active&pageSize=100");
+  const { data: services } = useApi<ServiceResponse>("/api/services");
   const items = data?.items ?? [];
   const completed = items.filter((item) => statusKey(item.status) === "completed").length;
   const expected = items.filter((item) => !["cancelled", "no_show"].includes(statusKey(item.status))).reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -74,6 +100,23 @@ export function AppointmentsView() {
       setCheckInCode(response.checkInToken);
     } catch (cause) {
       setCheckInMessage(cause instanceof Error ? cause.message : "Не удалось получить код");
+    }
+  }
+
+  async function createPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!paymentAppointment) return;
+    setPaymentSaving(true);
+    try {
+      const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+      await apiFetch("/api/payments", { method: "POST", body: { ...values, appointmentId: paymentAppointment.id } });
+      setPaymentAppointment(null);
+      dispatchCrmEvent("crm:data-changed");
+      await reload();
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : "Не удалось принять оплату");
+    } finally {
+      setPaymentSaving(false);
     }
   }
 
@@ -131,8 +174,13 @@ export function AppointmentsView() {
           <div className="small-stat"><span>Сумма без отмен</span><strong className="small-stat-label">{expected.toLocaleString("ru-RU")} ₸</strong></div>
         </div>
 
-        <div className="filter-bar">
+        <div className="filter-bar calendar-toolbar">
           <label className="filter-select search-input"><span>Поиск записи</span><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Имя или телефон" /></label>
+          <label className="filter-select"><span>Представление</span><select value={calendarView} onChange={(event) => setCalendarView(event.target.value as "today" | "day" | "week")}><option value="today">Сегодня</option><option value="day">День</option><option value="week">Неделя</option></select></label>
+          <label className="filter-select"><span>Дата</span><input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></label>
+          <label className="filter-select"><span>Филиал</span><select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}><option value="">Все филиалы</option>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+          <label className="filter-select"><span>Специалист</span><select value={employeeFilter} onChange={(event) => setEmployeeFilter(event.target.value)}><option value="">Все специалисты</option>{employees?.items.filter((employee) => employee.isActive).map((employee) => <option key={employee.id} value={employee.id}>{employee.fullName}</option>)}</select></label>
+          <label className="filter-select"><span>Статус</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">Все статусы</option><option value="SCHEDULED">Запланирован</option><option value="CONFIRMED">Подтверждён</option><option value="ARRIVED">Пришёл</option><option value="IN_PROGRESS">В работе</option><option value="COMPLETED">Завершён</option><option value="CANCELLED">Отменён</option><option value="NO_SHOW">Неявка</option></select></label>
           <div className="filter-spacer" />
           <span className="table-secondary">{deferredQuery ? `Результаты для «${deferredQuery}»` : "Последние записи"}</span>
         </div>
@@ -150,8 +198,8 @@ export function AppointmentsView() {
                     <td>{appointment.employeeName ?? "Не назначен"}<span className="table-secondary">{appointment.serviceName ?? "Услуга не указана"}</span></td>
                     <td>{appointment.branchName ?? "Без филиала"}</td>
                     <td><StatusPill status={currentStatus} /></td>
-                    <td><Amount value={Number(appointment.amount || 0)} /></td>
-                    <td><div className="appointment-actions">{!["completed", "cancelled", "no_show"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button><button className="inline-action" onClick={() => void completeAppointment(appointment.id)} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button></> : null}</div></td>
+                    <td><Amount value={Number(appointment.amount || 0)} /><span className="table-secondary">Оплачено {Number(appointment.paidAmount || 0).toLocaleString("ru-RU")} ₸</span></td>
+                    <td><div className="appointment-actions">{!["cancelled", "no_show"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus !== "completed" ? <button className="inline-action" onClick={() => void completeAppointment(appointment.id)} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
                   </tr>;
                 })}</tbody>
               </table>
@@ -164,15 +212,16 @@ export function AppointmentsView() {
         <form id="appointment-form" className="form-grid" onSubmit={createAppointment}>
           <FormField label="Дата и время"><input name="startsAt" type="datetime-local" required defaultValue={dateInputValue(new Date(Date.now() + 60 * 60 * 1000))} /></FormField>
           <FormField label="Статус"><select name="status" defaultValue="SCHEDULED"><option value="SCHEDULED">Запланирован</option><option value="CONFIRMED">Подтверждён</option><option value="ARRIVED">Пришёл</option><option value="IN_PROGRESS">В работе</option></select></FormField>
-          <FormField label="Имя клиента"><input name="clientName" required placeholder="Имя и фамилия" /></FormField>
-          <FormField label="Телефон клиента"><input name="clientPhone" required placeholder="+7 700 000 00 00" /></FormField>
-          <FormField label="Услуга"><input name="serviceName" placeholder="Например, медицинский педикюр" /></FormField>
-          <FormField label="Сумма, ₸"><input name="totalAmount" type="number" min="0" step="1" placeholder="0" /></FormField>
-          <FormField label="Специалист"><select name="employeeId" defaultValue=""><option value="">Не назначен</option>{employees?.items.filter((employee) => employee.isActive).map((employee) => <option key={employee.id} value={employee.id}>{employee.fullName}</option>)}</select></FormField>
-          <FormField label="Филиал"><select name="branchId" defaultValue=""><option value="">Без филиала</option>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></FormField>
+          <FormField label="Клиент"><select name="clientId" required defaultValue=""><option value="">Выберите клиента</option>{clients?.items.filter((client) => client.isActive !== 0).map((client) => <option key={client.id} value={client.id}>{client.fullName} · {client.phone}</option>)}</select></FormField>
+          <FormField label="Услуга"><select name="serviceId" required defaultValue=""><option value="">Выберите услугу</option>{services?.items.filter((service) => service.isActive).map((service) => <option key={service.id} value={service.id}>{service.name} · {Number(service.price || 0).toLocaleString("ru-RU")} ₸</option>)}</select></FormField>
+          <FormField label="Специалист"><select name="employeeId" required defaultValue=""><option value="">Выберите специалиста</option>{employees?.items.filter((employee) => employee.isActive).map((employee) => <option key={employee.id} value={employee.id}>{employee.fullName}{employee.branchName ? ` · ${employee.branchName}` : ""}</option>)}</select></FormField>
+          <FormField label="Филиал"><select name="branchId" required defaultValue=""><option value="">Выберите филиал</option>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></FormField>
           <FormField label="Комментарий" className="form-field-wide"><textarea name="notes" rows={3} placeholder="Что важно учесть перед приёмом" /></FormField>
           {formError ? <p className="form-error form-field-wide">{formError}</p> : null}
         </form>
+      </Modal> : null}
+      {paymentAppointment ? <Modal title={`Оплата · ${paymentAppointment.clientName}`} onClose={() => setPaymentAppointment(null)} footer={<><Button variant="secondary" onClick={() => setPaymentAppointment(null)}>Отмена</Button><button className="button button-primary" type="submit" form="payment-form" disabled={paymentSaving}>{paymentSaving ? "Проводим…" : "Провести оплату"}</button></>}>
+        <form id="payment-form" className="form-grid" onSubmit={createPayment}><FormField label="Сумма, ₸"><input name="amount" type="number" min="1" step="0.01" required defaultValue={Math.max(0, Number(paymentAppointment.balance ?? Number(paymentAppointment.amount || 0) - Number(paymentAppointment.paidAmount || 0)))} /></FormField><FormField label="Способ оплаты"><select name="method" defaultValue="CASH"><option value="CASH">Наличные</option><option value="CARD">Карта</option><option value="TRANSFER">Перевод / Kaspi</option><option value="OTHER">Другое</option></select></FormField><FormField label="Комментарий" className="form-field-wide"><textarea name="note" rows={2} placeholder="Например, частичная оплата" /></FormField>{formError ? <p className="form-error form-field-wide">{formError}</p> : null}</form>
       </Modal> : null}
       {checkInOpen ? <Modal title="Check-in клиента" onClose={() => setCheckInOpen(false)} footer={<Button variant="secondary" onClick={() => setCheckInOpen(false)}>Закрыть</Button>}>
         <form className="checkin-form" onSubmit={submitCheckIn}>

@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "podologymk-notifications",
   "main": "./workers/notifications.ts",
-  "compatibility_date": "2026-08-10",
+  "compatibility_date": "2026-08-08",
   "d1_databases": [
     {
       "binding": "DB",

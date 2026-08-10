@@ -3,8 +3,11 @@ export type AuthUser = {
   telegramId: string;
   name: string;
   username: string | null;
+  telegramUsername?: string | null;
   avatarUrl: string | null;
   role: string;
+  active?: number;
+  lastLoginAt?: string | null;
   clientId: string | null;
   phone: string | null;
   notificationsAllowed: number;
@@ -28,8 +31,10 @@ export type ClientRecord = {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  isActive?: number;
   visits: number;
   lastVisit: string | null;
+  nextVisit?: string | null;
   total: number;
   status: string;
 };
@@ -37,6 +42,7 @@ export type ClientRecord = {
 export type AppointmentRecord = {
   id: string;
   startsAt: string;
+  endsAt?: string | null;
   status: string;
   amount: number;
   notes: string | null;
@@ -45,6 +51,9 @@ export type AppointmentRecord = {
   serviceName: string | null;
   employeeName: string | null;
   branchName: string | null;
+  paidAmount?: number;
+  balance?: number;
+  source?: string | null;
 };
 
 export type EmployeeRecord = {
@@ -60,6 +69,7 @@ export type EmployeeRecord = {
   isActive: number;
   appointments: number;
   revenue: number;
+  userId?: string | null;
 };
 
 export type ExpenseRecord = {
@@ -72,6 +82,10 @@ export type ExpenseRecord = {
   occurredAt: string;
   status: string;
   description: string | null;
+  direction?: string;
+  kind?: string;
+  appointmentId?: string | null;
+  expenseId?: string | null;
 };
 
 export type DashboardResponse = {
@@ -84,6 +98,14 @@ export type DashboardResponse = {
     expenses: number;
     payroll: number;
     activeEmployees: number;
+    grossRevenue?: number;
+    refunds?: number;
+    newClients?: number;
+    noShows?: number;
+    averageCheck?: number;
+    occupiedMinutes?: number;
+    availableWorkingMinutes?: number;
+    occupancy?: number;
   };
   upcoming: Array<AppointmentRecord>;
   revenueByDay: Array<{ day: string; amount: number }>;
@@ -110,6 +132,7 @@ export type ServiceRecord = {
   name: string;
   category: string;
   price: number;
+  cost?: number;
   durationMinutes: number;
   isActive: number;
 };

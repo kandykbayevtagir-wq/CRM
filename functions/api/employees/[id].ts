@@ -1,38 +1,38 @@
-import { forbidden, getSessionUser, isStaff, unauthorized } from "../../_lib/auth";
+import { auditStatement } from "../../_lib/audit";
+import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { json, newId, notFound, optionalString, numberValue, readJson, stringValue } from "../../_lib/http";
+import { badRequest, json, notFound, optionalString, readJson } from "../../_lib/http";
+import { branchIds, employeeValues } from "../../_lib/employee";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
-  const existing = await env.DB.prepare("SELECT * FROM employees WHERE id = ?").bind(params.id).first();
+  if (!hasCrmPermission(user, "employees.write")) return forbidden();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
+  const existing = await env.DB.prepare("SELECT * FROM employees WHERE id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return notFound("Сотрудник не найден");
   const body = await readJson(request);
-  await env.DB.prepare(`
-    UPDATE employees SET full_name = ?, position = ?, phone = ?, email = ?, branch_id = ?, fixed_salary = ?, revenue_percent = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).bind(
-    stringValue(body, "fullName", String(existing.full_name ?? "")),
-    stringValue(body, "position", String(existing.position ?? "")),
-    optionalString(body, "phone") ?? existing.phone ?? null,
-    optionalString(body, "email") ?? existing.email ?? null,
-    optionalString(body, "branchId") ?? existing.branch_id ?? null,
-    numberValue(body, "fixedSalary", Number(existing.fixed_salary ?? 0)),
-    numberValue(body, "revenuePercent", Number(existing.revenue_percent ?? 0)),
-    params.id,
-  ).run();
-  await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'employee', ?, 'UPDATE')")
-    .bind(newId(), user.id, params.id).run();
+  const values = employeeValues(body, existing);
+  if (!values.fullName || !values.position || values.fixedSalary < 0 || values.revenuePercent < 0) return badRequest("Проверьте имя, должность и зарплатные настройки");
+  const ids = branchIds(body);
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`UPDATE employees SET full_name = ?, position = ?, phone = ?, email = ?, branch_id = ?, user_id = ?, fixed_salary = ?, revenue_percent = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(values.fullName, values.position, optionalString(body, "phone") ?? existing.phone ?? null, optionalString(body, "email") ?? existing.email ?? null, ids[0] ?? existing.branch_id ?? null, optionalString(body, "userId") ?? existing.user_id ?? null, values.fixedSalary, values.revenuePercent, body.isActive === undefined ? Number(existing.is_active ?? 1) : body.isActive === false || body.isActive === "false" ? 0 : 1, id),
+    env.DB.prepare("DELETE FROM employee_branches WHERE employee_id = ?").bind(id),
+  ];
+  for (const [index, branchId] of ids.entries()) statements.push(env.DB.prepare("INSERT INTO employee_branches (employee_id, branch_id, is_primary) VALUES (?, ?, ?)").bind(id, branchId, index === 0 ? 1 : 0));
+  statements.push(auditStatement(env.DB, user, "employee", id, "UPDATE", { fullName: existing.full_name, position: existing.position }, { fullName: values.fullName, position: values.position, branchIds: ids }));
+  await env.DB.batch(statements);
   return json({ ok: true });
 };
 
 export const onRequestDelete: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
-  const result = await env.DB.prepare("UPDATE employees SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(params.id).run();
+  if (!hasCrmPermission(user, "employees.write")) return forbidden();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
+  const result = await env.DB.prepare("UPDATE employees SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(id).run();
   if (!result.success || result.meta.changes === 0) return notFound("Сотрудник не найден");
-  await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'employee', ?, 'ARCHIVE')")
-    .bind(newId(), user.id, params.id).run();
+  await env.DB.batch([auditStatement(env.DB, user, "employee", id, "ARCHIVE", { isActive: 1 }, { isActive: 0 })]);
   return json({ ok: true });
 };

@@ -1,6 +1,6 @@
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, json, newId, optionalString, readJson, stringValue } from "../../_lib/http";
+import { badRequest, json, newId, optionalString, readJson } from "../../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);

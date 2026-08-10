@@ -1,4 +1,5 @@
 import { json } from "./http";
+import { hasPermission, type Permission } from "../../src/lib/permissions";
 
 const SESSION_COOKIE = "pmk_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -8,8 +9,11 @@ export type AuthUser = {
   telegramId: string;
   name: string;
   username: string | null;
+  telegramUsername?: string | null;
   avatarUrl: string | null;
   role: string;
+  active: number;
+  lastLoginAt: string | null;
   clientId: string | null;
   phone: string | null;
   notificationsAllowed: number;
@@ -37,10 +41,11 @@ export async function getSessionUser(request: Request, db: D1Database): Promise<
   const tokenHash = await sha256Hex(rawToken);
   const row = await db.prepare(`
     SELECT u.id, u.telegram_id AS telegramId, u.name, u.username, u.avatar_url AS avatarUrl, u.role,
+      u.telegram_username AS telegramUsername, u.active, u.last_login_at AS lastLoginAt,
       u.client_id AS clientId, u.phone, u.notifications_allowed AS notificationsAllowed
     FROM sessions s
     INNER JOIN users u ON u.id = s.user_id
-    WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP
+    WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1
     LIMIT 1
   `).bind(tokenHash).first<AuthUser>();
 
@@ -56,11 +61,20 @@ export function forbidden(message = "Недостаточно прав для э
 }
 
 export function isStaff(user: AuthUser | null): user is AuthUser {
-  return Boolean(user && user.role !== "CLIENT");
+  return Boolean(user && user.role !== "CLIENT" && user.active === 1);
 }
 
 export function isClient(user: AuthUser | null): user is AuthUser {
-  return Boolean(user && user.role === "CLIENT");
+  return Boolean(user && user.role === "CLIENT" && user.active === 1);
+}
+
+export function hasCrmPermission(user: AuthUser | null, permission: Permission): boolean {
+  return Boolean(user && user.active === 1 && hasPermission(user.role, permission));
+}
+
+export function requirePermission(user: AuthUser | null, permission: Permission) {
+  if (!user) return unauthorized();
+  return hasCrmPermission(user, permission) ? null : forbidden();
 }
 
 export async function createSession(db: D1Database, userId: string) {

@@ -1,11 +1,11 @@
-import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, now, numberValue, readJson, stringValue } from "../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
+  if (!hasCrmPermission(user, "settings.read")) return forbidden();
   const settings = await env.DB.prepare(`
     SELECT brand_name AS brandName, currency, timezone,
       booking_start_time AS bookingStartTime, booking_end_time AS bookingEndTime,
@@ -20,7 +20,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
+  if (!hasCrmPermission(user, "settings.write")) return forbidden();
   const body = await readJson(request);
   const brandName = stringValue(body, "brandName");
   const currency = stringValue(body, "currency", "KZT");

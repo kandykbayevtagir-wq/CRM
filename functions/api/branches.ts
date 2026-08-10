@@ -1,11 +1,11 @@
-import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, readJson, stringValue } from "../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
+  if (!hasCrmPermission(user, "settings.read")) return forbidden();
   const rows = await env.DB.prepare("SELECT id, name, address, phone, is_active AS isActive FROM branches ORDER BY name ASC").all();
   return json({ ok: true, items: rows.results ?? [] });
 };
@@ -13,7 +13,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
+  if (!hasCrmPermission(user, "settings.write")) return forbidden();
   const body = await readJson(request);
   const name = stringValue(body, "name");
   if (!name) return badRequest("Название филиала обязательно");

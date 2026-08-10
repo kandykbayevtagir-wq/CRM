@@ -3,16 +3,16 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bell,
+  Banknote,
   BriefcaseBusiness,
   CalendarDays,
   CalendarClock,
   ChevronDown,
   CircleHelp,
   ClipboardList,
-  CreditCard,
   FileBarChart,
   LayoutDashboard,
   Menu,
@@ -27,33 +27,40 @@ import {
 import { useApi } from "@/lib/use-api";
 import type { AuthResponse, SettingsResponse } from "@/lib/crm-types";
 import { ClientShell } from "@/components/client-shell";
+import { hasPermission, type Permission } from "@/lib/permissions";
 
 const primaryNavigation = [
-  { href: "/", label: "Обзор", icon: LayoutDashboard },
-  { href: "/appointments", label: "Записи", icon: CalendarDays },
-  { href: "/clients", label: "Клиенты", icon: UsersRound },
-  { href: "/employees", label: "Сотрудники", icon: ClipboardList },
+  { href: "/", label: "Обзор", icon: LayoutDashboard, permission: "dashboard.read" as Permission },
+  { href: "/appointments", label: "Записи", icon: CalendarDays, permission: "appointments.read" as Permission },
+  { href: "/clients", label: "Клиенты", icon: UsersRound, permission: "clients.read" as Permission },
+  { href: "/employees", label: "Сотрудники", icon: ClipboardList, permission: "employees.read" as Permission },
 ];
 
 const financeNavigation = [
-  { href: "/services", label: "Услуги", icon: BriefcaseBusiness },
-  { href: "/schedules", label: "Расписание", icon: CalendarClock },
-  { href: "/reviews", label: "Отзывы", icon: Star },
-  { href: "/finance", label: "Финансы", icon: WalletCards },
-  { href: "/reports", label: "Отчёты", icon: FileBarChart },
+  { href: "/services", label: "Услуги", icon: BriefcaseBusiness, permission: "services.read" as Permission },
+  { href: "/schedules", label: "Расписание", icon: CalendarClock, permission: "schedules.read" as Permission },
+  { href: "/reviews", label: "Отзывы", icon: Star, permission: "reviews.read" as Permission },
+  { href: "/finance", label: "Финансы", icon: WalletCards, permission: "finance.read" as Permission },
+  { href: "/payroll", label: "Зарплата", icon: Banknote, permission: "payroll.read" as Permission },
+  { href: "/reports", label: "Отчёты", icon: FileBarChart, permission: "reports.read" as Permission },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [selectedBranchId, setSelectedBranchId] = useState("");
   const { data: auth } = useApi<AuthResponse>("/api/auth/me");
   const { data: settings } = useApi<SettingsResponse>("/api/settings");
   const user = auth?.user;
+  useEffect(() => {
+    setSelectedBranchId(window.localStorage.getItem("pmk_branch_id") ?? "");
+  }, []);
+  const visiblePrimary = user ? primaryNavigation.filter((item) => hasPermission(user.role, item.permission)) : primaryNavigation;
+  const visibleFinance = user ? financeNavigation.filter((item) => hasPermission(user.role, item.permission)) : financeNavigation;
   const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
-  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/reports": "Отчёты", "/settings": "Настройки" };
+  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/settings": "Настройки" };
   const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
-  const branchName = settings?.branches?.length ? `Все филиалы · ${settings.branches.length}` : "Филиалы пока не добавлены";
 
   if (user?.role === "CLIENT") return <ClientShell user={user}>{children}</ClientShell>;
 
@@ -77,18 +84,18 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
         </div>
 
-        <div className="branch-switcher">
+        <label className="branch-switcher">
           <span className="branch-avatar">P</span>
           <span className="branch-copy">
             <small>Рабочее пространство</small>
-            <strong>{branchName}</strong>
+            <select value={selectedBranchId} onChange={(event) => { setSelectedBranchId(event.target.value); window.localStorage.setItem("pmk_branch_id", event.target.value); window.dispatchEvent(new Event("crm:data-changed")); }} aria-label="Текущий филиал"><option value="">Все филиалы{settings?.branches?.length ? ` · ${settings.branches.length}` : ""}</option>{settings?.branches?.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select>
           </span>
           <ChevronDown size={15} />
-        </div>
+        </label>
 
         <nav className="sidebar-nav" aria-label="Основная навигация">
           <p className="nav-caption">РАБОЧИЙ СТОЛ</p>
-          {primaryNavigation.map((item) => {
+          {visiblePrimary.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (
@@ -100,7 +107,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           })}
 
           <p className="nav-caption nav-caption-spaced">УПРАВЛЕНИЕ</p>
-          {financeNavigation.map((item) => {
+          {visibleFinance.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (
@@ -113,10 +120,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="sidebar-bottom">
-          <Link href="/settings" className={`nav-item ${pathname === "/settings" ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}>
-            <Settings size={18} strokeWidth={1.8} />
-            <span>Настройки</span>
-          </Link>
+          {(!user || hasPermission(user.role, "settings.read")) ? <Link href="/settings" className={`nav-item ${pathname === "/settings" ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}><Settings size={18} strokeWidth={1.8} /><span>Настройки</span></Link> : null}
           <div className="help-card">
             <div className="help-icon"><CircleHelp size={17} /></div>
             <div>

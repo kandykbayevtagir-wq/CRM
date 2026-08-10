@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useDeferredValue, useState } from "react";
+import Link from "next/link";
 import { Download, Plus, Search, UserRoundPlus } from "lucide-react";
 
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
@@ -10,15 +11,19 @@ import type { ClientRecord } from "@/lib/crm-types";
 import { formatDateTime, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
-type ClientResponse = { ok: true; items: ClientRecord[]; total: number };
+type ClientResponse = { ok: true; items: ClientRecord[]; total: number; page: number; pageSize: number; pages: number };
 
 export function ClientsView() {
   const [query, setQuery] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [status, setStatus] = useState("active");
   const deferredQuery = useDeferredValue(query);
-  const path = `/api/clients${deferredQuery.trim() ? `?q=${encodeURIComponent(deferredQuery.trim())}` : ""}`;
+  const searchParams = new URLSearchParams({ page: String(page), pageSize: "25", status });
+  if (deferredQuery.trim()) searchParams.set("q", deferredQuery.trim());
+  const path = `/api/clients?${searchParams.toString()}`;
   const { data, loading, error, reload } = useApi<ClientResponse>(path);
   const items = data?.items ?? [];
 
@@ -31,6 +36,7 @@ export function ClientsView() {
       await apiFetch("/api/clients", { method: "POST", body: values });
       setModalOpen(false);
       dispatchCrmEvent("crm:data-changed");
+      setPage(1);
       await reload();
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : "Не удалось добавить клиента");
@@ -45,7 +51,7 @@ export function ClientsView() {
         eyebrow="Рабочий стол"
         title="Клиенты"
         description="Единая облачная база клиентов с историей посещений и фактическими оплатами."
-        actions={<><Button variant="secondary" onClick={() => window.print()}><Download size={15} /> Печать</Button><Button onClick={() => { setFormError(null); setModalOpen(true); }}><UserRoundPlus size={16} /> Новый клиент</Button></>}
+        actions={<><Button variant="secondary" onClick={() => { window.location.href = "/api/export?type=clients"; }}><Download size={15} /> CSV клиентов</Button><Button variant="secondary" onClick={() => window.print()}><Download size={15} /> Печать</Button><Button onClick={() => { setFormError(null); setModalOpen(true); }}><UserRoundPlus size={16} /> Новый клиент</Button></>}
       />
 
       {loading && !data ? <LoadingState /> : null}
@@ -56,11 +62,12 @@ export function ClientsView() {
         <div className="stat-strip">
           <div className="small-stat"><span>Клиентов в базе</span><strong>{data.total}</strong></div>
           <div className="small-stat"><span>Показано в списке</span><strong>{items.length}</strong></div>
-          <div className="small-stat"><span>Источник данных</span><strong className="small-stat-label">Cloudflare D1</strong></div>
+          <div className="small-stat"><span>Источник данных</span><strong className="small-stat-label">Облачная база</strong></div>
         </div>
 
         <div className="filter-bar">
           <label className="filter-select search-input"><span>Поиск клиента</span><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Имя или телефон" /></label>
+          <label className="filter-select"><span>Статус</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}><option value="active">Активные</option><option value="archived">Архив</option><option value="all">Все</option></select></label>
           <div className="filter-spacer" />
           <span className="table-secondary">{deferredQuery ? `Результаты для «${deferredQuery}»` : "Все клиенты"}</span>
         </div>
@@ -72,7 +79,7 @@ export function ClientsView() {
                 <thead><tr><th>Клиент</th><th>Последний визит</th><th>Посещения</th><th>Оплаты</th><th>Статус</th></tr></thead>
                 <tbody>{items.map((client, index) => (
                   <tr key={client.id}>
-                    <td><div className="client-cell"><Avatar initials={initials(client.fullName)} tone={index % 3 === 0 ? "violet" : index % 3 === 1 ? "blue" : "peach"} /><div><strong>{client.fullName}</strong><span>{client.phone}{client.email ? ` · ${client.email}` : ""}</span></div></div></td>
+                    <td><Link href={`/clients/${client.id}`} className="client-cell"><Avatar initials={initials(client.fullName)} tone={index % 3 === 0 ? "violet" : index % 3 === 1 ? "blue" : "peach"} /><div><strong>{client.fullName}</strong><span>{client.phone}{client.email ? ` · ${client.email}` : ""}</span></div></Link></td>
                     <td>{formatDateTime(client.lastVisit)}</td>
                     <td>{Number(client.visits || 0)}</td>
                     <td><Amount value={Number(client.total || 0)} /></td>
@@ -82,6 +89,7 @@ export function ClientsView() {
               </table>
             </div>
           )}
+          {data.pages > 1 ? <div className="pagination-bar"><button className="button button-secondary" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Назад</button><span>Страница {data.page} из {data.pages}</span><button className="button button-secondary" disabled={page >= data.pages} onClick={() => setPage((value) => Math.min(data.pages, value + 1))}>Далее</button></div> : null}
         </SectionCard>
       </> : null}
 

@@ -13,6 +13,15 @@ type ApiRequestInit = Omit<RequestInit, "body"> & { body?: BodyInit | Record<str
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json");
+  let requestPath = path;
+  if (typeof window !== "undefined" && (init.method ?? "GET").toUpperCase() === "GET" && path.startsWith("/api/") && window.localStorage.getItem("pmk_branch_id")) {
+    const branchAware = ["/api/dashboard", "/api/appointments", "/api/finance", "/api/reports", "/api/payments", "/api/rent", "/api/utilities"];
+    if (branchAware.some((prefix) => path.startsWith(prefix))) {
+      const url = new URL(path, window.location.origin);
+      if (!url.searchParams.has("branchId")) url.searchParams.set("branchId", window.localStorage.getItem("pmk_branch_id") ?? "");
+      requestPath = `${url.pathname}${url.search}`;
+    }
+  }
 
   let body = init.body;
   if (body && typeof body !== "string" && !(body instanceof FormData)) {
@@ -20,7 +29,7 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(requestPath, {
     ...init,
     body,
     headers,

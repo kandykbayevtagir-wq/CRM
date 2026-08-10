@@ -62,6 +62,10 @@ export function badRequest(message: string) {
   return json({ ok: false, error: message }, 400);
 }
 
+export function conflict(message: string) {
+  return json({ ok: false, error: message }, 409);
+}
+
 export function notFound(message = "Not found") {
   return json({ ok: false, error: message }, 404);
 }

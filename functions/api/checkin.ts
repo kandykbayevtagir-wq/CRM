@@ -1,11 +1,11 @@
-import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newCheckInToken, newId, readJson, stringValue } from "../_lib/http";
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
-  if (!isStaff(user)) return forbidden();
+  if (!hasCrmPermission(user, "appointments.write")) return forbidden();
   const body = await readJson(request);
   const appointmentId = stringValue(body, "appointmentId");
   const token = stringValue(body, "token").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -32,6 +32,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   await env.DB.batch([
     env.DB.prepare("UPDATE appointments SET status = 'ARRIVED', checked_in_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(appointment.id),
     env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, 'ARRIVED', ?, 'Check-in клиента')").bind(newId(), appointment.id, appointment.status, user.id),
+    env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, after_json) VALUES (?, ?, 'appointment', ?, 'CHECK_IN', ?)").bind(newId(), user.id, appointment.id, JSON.stringify({ status: "ARRIVED" })),
   ]);
   return json({ ok: true, appointment: { id: appointment.id, clientName: appointment.clientName, serviceName: appointment.serviceName, startsAt: appointment.startsAt, status: "ARRIVED" } });
 };

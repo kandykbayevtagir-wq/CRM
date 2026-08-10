@@ -62,7 +62,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const slot = slots.find((item) => item.startsAt === startsAt && item.employeeId === employeeId);
   if (!slot) return json({ ok: false, error: "Это время уже занято. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
 
-  const service = await env.DB.prepare("SELECT name FROM services WHERE id = ?").bind(serviceId).first<{ name: string }>();
+  const service = await env.DB.prepare("SELECT name, duration_minutes AS durationMinutes FROM services WHERE id = ?").bind(serviceId).first<{ name: string; durationMinutes: number }>();
   const branch = await env.DB.prepare("SELECT name FROM branches WHERE id = ?").bind(branchId).first<{ name: string }>();
   const client = await env.DB.prepare("SELECT full_name AS fullName FROM clients WHERE id = ?").bind(user.clientId).first<{ fullName: string }>();
   const id = existing?.id ?? newId();
@@ -70,13 +70,13 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   try {
     if (existing) {
       await env.DB.batch([
-        env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, status = 'SCHEDULED', total_amount = ?, cancel_reason = NULL, cancelled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.price, id),
+        env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, ends_at = ?, status = 'SCHEDULED', source = 'TELEGRAM', total_amount = ?, cancel_reason = NULL, cancelled_at = NULL, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.endsAt, slot.price, user.id, id),
         env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, 'SCHEDULED', ?, 'Клиент перенёс запись')").bind(newId(), id, existing.status, user.id),
       ]);
     } else {
       await env.DB.batch([
-        env.DB.prepare("INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, status, total_amount, check_in_token) VALUES (?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)").bind(id, user.clientId, employeeId, branchId, startsAt, slot.price, newCheckInToken()),
-        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price) VALUES (?, ?, ?)").bind(id, serviceId, slot.price),
+        env.DB.prepare("INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, ends_at, status, source, total_amount, check_in_token, created_by, changed_by) VALUES (?, ?, ?, ?, ?, ?, 'SCHEDULED', 'TELEGRAM', ?, ?, ?, ?)").bind(id, user.clientId, employeeId, branchId, startsAt, slot.endsAt, slot.price, newCheckInToken(), user.id, user.id),
+        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes) VALUES (?, ?, ?, ?)").bind(id, serviceId, slot.price, service?.durationMinutes ?? 60),
         env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, NULL, 'SCHEDULED', ?, 'Клиент создал запись')").bind(newId(), id, user.id),
       ]);
     }

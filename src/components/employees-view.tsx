@@ -30,7 +30,8 @@ export function EmployeesView() {
     event.preventDefault();
     setSaving(true);
     setFormError(null);
-    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const formData = new FormData(event.currentTarget);
+    const values = { ...Object.fromEntries(formData.entries()), branchIds: formData.getAll("branchIds").map(String) };
     try {
       await apiFetch("/api/employees", { method: "POST", body: values });
       setModalOpen(false);
@@ -95,7 +96,7 @@ export function EmployeesView() {
           <FormField label="Должность"><input name="position" required placeholder="Подолог" /></FormField>
           <FormField label="Телефон"><input name="phone" placeholder="+7 700 000 00 00" /></FormField>
           <FormField label="Email"><input name="email" type="email" placeholder="employee@example.com" /></FormField>
-          <FormField label="Филиал"><select name="branchId" defaultValue=""><option value="">Без филиала</option>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></FormField>
+          <FormField label="Филиалы"><select name="branchIds" multiple size={Math.min(4, Math.max(2, branches?.items.length ?? 2))} defaultValue={[]}>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><small className="form-hint">Можно выбрать несколько филиалов. Первый будет основным.</small></FormField>
           <FormField label="Фиксированная часть, ₸"><input name="fixedSalary" type="number" min="0" step="1" placeholder="0" /></FormField>
           <FormField label="Процент с выручки"><input name="revenuePercent" type="number" min="0" max="100" step="0.1" placeholder="0" /></FormField>
           {formError ? <p className="form-error form-field-wide">{formError}</p> : null}

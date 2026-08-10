@@ -5,7 +5,7 @@ import { ArrowRight, CalendarPlus, Plus, WalletCards } from "lucide-react";
 import { useMemo } from "react";
 
 import { AuthHint, EmptyState, ErrorState, isAuthError, LoadingState } from "@/components/data-state";
-import { Amount, Avatar, Button, MetricCard, PageHeader, SectionCard, StatusPill } from "@/components/ui";
+import { Amount, Avatar, MetricCard, PageHeader, SectionCard, StatusPill } from "@/components/ui";
 import { formatCompactCurrency, formatCurrency, formatDateTime, initials } from "@/lib/format";
 import type { DashboardResponse } from "@/lib/crm-types";
 import { useApi } from "@/lib/use-api";
@@ -36,7 +36,7 @@ export function DashboardView() {
       <PageHeader
         eyebrow={today}
         title="Рабочий день под контролем"
-        description="Актуальные показатели центра синхронизируются с облачной базой Cloudflare D1."
+        description="Актуальные показатели центра синхронизируются с облачной базой и пересчитываются из проведённых операций."
         actions={<Link href="/appointments" className="button button-primary"><Plus size={16} /> Новая запись</Link>}
       />
 
@@ -51,6 +51,7 @@ export function DashboardView() {
           <MetricCard label="Начислено зарплат" value={compactMoney(metrics?.payroll ?? 0)} change="закрытые периоды" trend="neutral" tone="peach" />
           <MetricCard label="Записей за месяц" value={String(metrics?.monthAppointments ?? 0)} change="без отмен и неявок" trend="neutral" tone="sky" />
         </section>
+        <div className="stat-strip page-section-tight"><div className="small-stat"><span>Новые клиенты</span><strong>{metrics?.newClients ?? 0}</strong></div><div className="small-stat"><span>Средний чек</span><strong className="small-stat-label">{formatCurrency(metrics?.averageCheck ?? 0)}</strong></div><div className="small-stat"><span>Неявки</span><strong>{metrics?.noShows ?? 0}</strong></div><div className="small-stat"><span>Загрузка специалистов</span><strong className="small-stat-label">{(metrics?.occupancy ?? 0).toLocaleString("ru-RU")} %</strong></div></div>
 
         <div className="dashboard-grid">
           <SectionCard
@@ -68,7 +69,7 @@ export function DashboardView() {
                       <td><div className="client-cell"><Avatar initials={initials(appointment.clientName)} tone="violet" /><div><strong>{appointment.clientName}</strong><span>{appointment.serviceName ?? "Услуга не указана"}</span></div></div></td>
                       <td>{appointment.employeeName ?? "Специалист не назначен"}</td>
                       <td><StatusPill status={statusKey(appointment.status)} /></td>
-                      <td><Amount value={Number(appointment.amount || 0)} /></td>
+                      <td><Amount value={Number(appointment.amount || 0)} /><span className="table-secondary">Оплачено {Number(appointment.paidAmount || 0).toLocaleString("ru-RU")} ₸</span></td>
                     </tr>
                   ))}</tbody>
                 </table>
