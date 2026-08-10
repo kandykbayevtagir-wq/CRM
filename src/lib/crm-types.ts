@@ -15,6 +15,22 @@ export type AuthUser = {
 
 export type AuthResponse = { ok: true; user: AuthUser };
 
+export type CrmNotification = {
+  id: string;
+  kind: string;
+  title: string;
+  description: string;
+  occurredAt: string;
+  read: boolean;
+  href?: string | null;
+};
+
+export type NotificationsResponse = {
+  ok: true;
+  unreadCount: number;
+  items: CrmNotification[];
+};
+
 export type Branch = {
   id: string;
   name: string;

@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bell,
   Banknote,
@@ -16,6 +16,7 @@ import {
   FileBarChart,
   LayoutDashboard,
   Menu,
+  RefreshCw,
   Settings,
   ShieldCheck,
   Star,
@@ -25,7 +26,8 @@ import {
 } from "lucide-react";
 
 import { useApi } from "@/lib/use-api";
-import type { AuthResponse, SettingsResponse } from "@/lib/crm-types";
+import { apiFetch } from "@/lib/api-client";
+import type { AuthResponse, NotificationsResponse, SettingsResponse } from "@/lib/crm-types";
 import { ClientShell } from "@/components/client-shell";
 import { hasPermission, type Permission } from "@/lib/permissions";
 
@@ -45,6 +47,12 @@ const financeNavigation = [
   { href: "/reports", label: "Отчёты", icon: FileBarChart, permission: "reports.read" as Permission },
 ];
 
+function formatShellDate(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -52,8 +60,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { data: auth } = useApi<AuthResponse>("/api/auth/me");
   const { data: settings } = useApi<SettingsResponse>("/api/settings");
   const user = auth?.user;
+  const { data: notifications, reload: reloadNotifications } = useApi<NotificationsResponse>("/api/notifications", undefined, { enabled: Boolean(user && user.role !== "CLIENT") });
+  const [openPanel, setOpenPanel] = useState<"notifications" | "profile" | null>(null);
+  const topbarActionsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setSelectedBranchId(window.localStorage.getItem("pmk_branch_id") ?? "");
+  }, []);
+  useEffect(() => {
+    function closeOnOutside(event: MouseEvent) {
+      if (topbarActionsRef.current && !topbarActionsRef.current.contains(event.target as Node)) setOpenPanel(null);
+    }
+    document.addEventListener("mousedown", closeOnOutside);
+    return () => document.removeEventListener("mousedown", closeOnOutside);
   }, []);
   const visiblePrimary = user ? primaryNavigation.filter((item) => hasPermission(user.role, item.permission)) : primaryNavigation;
   const visibleFinance = user ? financeNavigation.filter((item) => hasPermission(user.role, item.permission)) : financeNavigation;
@@ -61,6 +79,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
   const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/settings": "Настройки" };
   const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
+
+  async function logout() {
+    try {
+      await apiFetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.href = "/";
+    }
+  }
 
   if (user?.role === "CLIENT") return <ClientShell user={user}>{children}</ClientShell>;
 
@@ -142,16 +168,29 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="main-column">
         <header className="topbar">
           <div className="topbar-breadcrumb"><span>podologymk</span><span>/</span><strong>{pageLabel}</strong></div>
-          <div className="topbar-actions">
-            <button className="icon-button notification-button" aria-label="Уведомления">
+          <div className="topbar-actions" ref={topbarActionsRef}>
+            <button className={`icon-button notification-button ${openPanel === "notifications" ? "topbar-control-active" : ""}`} aria-label="Уведомления" aria-expanded={openPanel === "notifications"} onClick={() => { setOpenPanel(openPanel === "notifications" ? null : "notifications"); if (openPanel !== "notifications") void reloadNotifications(); }}>
               <Bell size={19} strokeWidth={1.8} />
-              <span className="notification-dot" />
+              {notifications?.unreadCount ? <span className="notification-count">{notifications.unreadCount > 9 ? "9+" : notifications.unreadCount}</span> : null}
             </button>
-            <button className="topbar-profile">
+            {openPanel === "notifications" ? <div className="topbar-popover notifications-popover">
+              <div className="popover-heading"><div><span className="eyebrow">Центр событий</span><strong>Уведомления</strong></div><button className="popover-refresh" onClick={() => void reloadNotifications()} aria-label="Обновить уведомления"><RefreshCw size={15} /></button></div>
+              {!notifications?.items.length ? <div className="popover-empty"><Bell size={20} /><strong>Пока всё спокойно</strong><span>Новые записи, оплаты и изменения появятся здесь.</span></div> : <div className="notification-list">{notifications.items.map((item) => {
+                const content = <><span className={`notification-item-icon notification-kind-${item.kind.toLowerCase()}`}><Bell size={14} /></span><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.description}</span><small>{formatShellDate(item.occurredAt)}</small></span>{!item.read ? <i className="notification-unread" /> : null}</>;
+                return item.href ? <Link href={item.href} key={item.id} className="notification-item" onClick={() => setOpenPanel(null)}>{content}</Link> : <div key={item.id} className="notification-item">{content}</div>;
+              })}</div>}
+            </div> : null}
+            <button className={`topbar-profile ${openPanel === "profile" ? "topbar-control-active" : ""}`} aria-expanded={openPanel === "profile"} onClick={() => setOpenPanel(openPanel === "profile" ? null : "profile")}>
               <span className="topbar-avatar">{initials}</span>
               <span className="topbar-profile-copy"><strong>{user?.name ?? "Гость"}</strong><small>{role}</small></span>
               <ChevronDown size={15} />
             </button>
+            {openPanel === "profile" && user ? <div className="topbar-popover profile-popover">
+              <div className="profile-popover-header"><span className="profile-popover-avatar">{initials}</span><div><strong>{user.name}</strong><span>{role}</span></div></div>
+              <div className="profile-facts"><div><span>Telegram ID</span><strong>{user.telegramId}</strong></div><div><span>Username</span><strong>{user.telegramUsername || user.username ? `@${user.telegramUsername || user.username}` : "Не указан"}</strong></div><div><span>Телефон</span><strong>{user.phone || "Не указан"}</strong></div><div><span>Последний вход</span><strong>{formatShellDate(user.lastLoginAt)}</strong></div></div>
+              <div className="profile-status"><span className="cloud-status-dot" /><span>Доступ активен · данные загружены по Telegram ID</span></div>
+              <div className="profile-popover-actions">{hasPermission(user.role, "settings.read") ? <Link href="/settings" className="button button-secondary" onClick={() => setOpenPanel(null)}><Settings size={14} /> Настройки</Link> : null}<button className="button button-ghost" onClick={() => void logout()}>Выйти</button></div>
+            </div> : null}
           </div>
         </header>
         <main className="content-area page-transition">{children}</main>

@@ -28,14 +28,15 @@ export type Permission =
   | "reviews.read"
   | "reviews.write"
   | "users.read"
-  | "users.write";
+  | "users.write"
+  | "notifications.read";
 
 const ownerPermissions: readonly Permission[] = [
   "dashboard.read", "reports.read", "appointments.read", "appointments.write", "appointments.manage_all",
   "clients.read", "clients.write", "clients.archive", "services.read", "services.write", "employees.read",
   "employees.write", "schedules.read", "schedules.write", "payments.read", "payments.write", "finance.read",
   "finance.write", "payroll.read", "payroll.write", "settings.read", "settings.write", "audit.read", "exports.read",
-  "reviews.read", "reviews.write", "users.read", "users.write",
+  "reviews.read", "reviews.write", "users.read", "users.write", "notifications.read",
 ];
 
 const rolePermissions: Record<CrmRole, readonly Permission[]> = {
@@ -43,13 +44,13 @@ const rolePermissions: Record<CrmRole, readonly Permission[]> = {
   ADMINISTRATOR: [
     "dashboard.read", "appointments.read", "appointments.write", "appointments.manage_all", "clients.read", "clients.write",
     "clients.archive", "services.read", "employees.read", "schedules.read", "payments.read", "payments.write", "reviews.read",
-    "reviews.write", "exports.read", "settings.read",
+    "reviews.write", "exports.read", "settings.read", "notifications.read",
   ],
   SPECIALIST: [
-    "appointments.read", "appointments.write", "clients.read", "services.read", "schedules.read", "reviews.read",
+    "appointments.read", "appointments.write", "clients.read", "services.read", "schedules.read", "reviews.read", "notifications.read",
   ],
   ACCOUNTANT: [
-    "dashboard.read", "reports.read", "payments.read", "finance.read", "finance.write", "payroll.read", "payroll.write", "exports.read", "audit.read",
+    "dashboard.read", "reports.read", "payments.read", "finance.read", "finance.write", "payroll.read", "payroll.write", "exports.read", "audit.read", "notifications.read",
   ],
   CLIENT: [],
 };
