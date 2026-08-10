@@ -30,13 +30,17 @@ export function Button({
   children,
   variant = "primary",
   type = "button",
+  onClick,
+  disabled = false,
 }: {
   children: ReactNode;
   variant?: "primary" | "secondary" | "ghost";
-  type?: "button" | "submit";
+  type?: "button" | "submit" | "reset";
+  onClick?: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <button className={`button button-${variant}`} type={type}>
+    <button className={`button button-${variant}`} type={type} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
@@ -79,7 +83,7 @@ export function MetricCard({
   label: string;
   value: string;
   change: string;
-  trend: "up" | "down";
+  trend: "up" | "down" | "neutral";
   tone: string;
 }) {
   return (
@@ -90,7 +94,7 @@ export function MetricCard({
       </div>
       <strong>{value}</strong>
       <div className={`metric-change metric-change-${trend}`}>
-        {trend === "up" ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+        {trend === "up" ? <ArrowUpRight size={15} /> : trend === "down" ? <ArrowDownRight size={15} /> : null}
         <span>{change}</span>
         <span className="metric-period">к прошлому месяцу</span>
       </div>

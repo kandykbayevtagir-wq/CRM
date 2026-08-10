@@ -1,12 +1,7 @@
-type TelegramEnv = {
-  TELEGRAM_BOT_TOKEN?: string;
-};
+import type { CrmEnv } from "../../_lib/env";
 
-type PagesContext = {
-  env: TelegramEnv;
-};
-
-export const onRequestGet = ({ env }: PagesContext) => Response.json({
+export const onRequestGet: PagesFunction<CrmEnv> = ({ env }) => Response.json({
   ok: true,
   telegramSecretConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+  databaseConfigured: Boolean(env.DB),
 });

@@ -21,9 +21,12 @@ import {
   X,
 } from "lucide-react";
 
+import { useApi } from "@/lib/use-api";
+import type { AuthResponse, SettingsResponse } from "@/lib/crm-types";
+
 const primaryNavigation = [
   { href: "/", label: "Обзор", icon: LayoutDashboard },
-  { href: "/appointments", label: "Записи", icon: CalendarDays, badge: "12" },
+  { href: "/appointments", label: "Записи", icon: CalendarDays },
   { href: "/clients", label: "Клиенты", icon: UsersRound },
   { href: "/employees", label: "Сотрудники", icon: ClipboardList },
 ];
@@ -36,6 +39,14 @@ const financeNavigation = [
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { data: auth } = useApi<AuthResponse>("/api/auth/me");
+  const { data: settings } = useApi<SettingsResponse>("/api/settings");
+  const user = auth?.user;
+  const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
+  const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
+  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/finance": "Финансы", "/reports": "Отчёты", "/settings": "Настройки" };
+  const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
+  const branchName = settings?.branches?.length ? `Все филиалы · ${settings.branches.length}` : "Филиалы пока не добавлены";
 
   return (
     <div className="app-shell">
@@ -48,8 +59,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Link href="/" className="brand-mark" onClick={() => setMobileOpen(false)}>
             <span className="brand-symbol">p</span>
             <span>
-              <strong>podo</strong>
-              <small>center CRM</small>
+              <strong>podologymk</strong>
+              <small>CRM для центра</small>
             </span>
           </Link>
           <button className="sidebar-close" onClick={() => setMobileOpen(false)} aria-label="Закрыть меню">
@@ -58,10 +69,10 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         <div className="branch-switcher">
-          <span className="branch-avatar">С</span>
+          <span className="branch-avatar">P</span>
           <span className="branch-copy">
-            <small>Текущий филиал</small>
-            <strong>Сарыарка</strong>
+            <small>Рабочее пространство</small>
+            <strong>{branchName}</strong>
           </span>
           <ChevronDown size={15} />
         </div>
@@ -75,7 +86,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Link key={item.href} href={item.href} className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}>
                 <Icon size={18} strokeWidth={active ? 2.2 : 1.8} />
                 <span>{item.label}</span>
-                {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
               </Link>
             );
           })}
@@ -106,10 +116,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </div>
           <div className="sidebar-user">
-            <span className="user-avatar">ТК</span>
+            <span className="user-avatar">{initials}</span>
             <span className="user-copy">
-              <strong>Тагир Кандыкаев</strong>
-              <small>Владелец</small>
+              <strong>{user?.name ?? "Гость"}</strong>
+              <small>{role}</small>
             </span>
             <ShieldCheck size={15} className="user-verified" />
           </div>
@@ -118,20 +128,20 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <div className="main-column">
         <header className="topbar">
-          <div className="topbar-breadcrumb"><span>podo center</span><span>/</span><strong>{pathname === "/" ? "Обзор" : pathname.slice(1)}</strong></div>
+          <div className="topbar-breadcrumb"><span>podologymk</span><span>/</span><strong>{pageLabel}</strong></div>
           <div className="topbar-actions">
             <button className="icon-button notification-button" aria-label="Уведомления">
               <Bell size={19} strokeWidth={1.8} />
               <span className="notification-dot" />
             </button>
             <button className="topbar-profile">
-              <span className="topbar-avatar">ТК</span>
-              <span className="topbar-profile-copy"><strong>Тагир</strong><small>Владелец</small></span>
+              <span className="topbar-avatar">{initials}</span>
+              <span className="topbar-profile-copy"><strong>{user?.name ?? "Гость"}</strong><small>{role}</small></span>
               <ChevronDown size={15} />
             </button>
           </div>
         </header>
-        <main className="content-area">{children}</main>
+        <main className="content-area page-transition">{children}</main>
       </div>
     </div>
   );

@@ -1,52 +1,58 @@
-# PodoCenter CRM
+# podologymk CRM
 
-CRM для патологического/подологического центра: записи клиентов, сотрудники, зарплата, филиалы, аренда, коммунальные услуги и сводный финансовый учёт.
+Облачная CRM-система для podologymk: записи клиентов, сотрудники, начисление зарплаты, финансы, филиалы и сводные отчёты.
 
-## Что уже есть
+## Что сделано
 
-- рабочий каркас Next.js 16 + TypeScript;
-- первый интерфейс CRM: дашборд, календарь записей, клиенты, сотрудники, финансы, отчёты и настройки;
-- Prisma-схема PostgreSQL с филиалами, клиентами, услугами, записями, платежами, зарплатными периодами, корректировками, расходами, арендой, коммунальными платежами и журналом изменений;
-- адаптивная боковая навигация и единый визуальный стиль;
-- `.env.example` с примером подключения к PostgreSQL.
-- Telegram Mini App-обвязка: Telegram WebApp SDK, проверка `initData` в Cloudflare Pages Function и конфигурационный скрипт меню бота;
-- Cloudflare Pages-конфигурация через `wrangler.toml`.
+- интерфейс без демо-клиентов, тестовых сумм и фиктивных сотрудников;
+- Cloudflare Pages для фронтенда и Functions для API;
+- Cloudflare D1 как единый источник данных с миграциями в `migrations/`;
+- авторизация через Telegram Mini App с сессионной cookie;
+- CRUD для клиентов, записей, сотрудников, филиалов, настроек и расходов;
+- журнал изменений финансовых и справочных операций;
+- адаптивный интерфейс, пустые состояния, обработка ошибок и мягкие анимации;
+- предварительный расчёт зарплаты: фиксированная часть + процент от фактической выручки.
 
 ## Запуск
 
 ```bash
 npm install
-cp .env.example .env
-npx prisma generate
-npx prisma migrate dev --name init
-npm run dev
+npm run typecheck
+npm run build:pages
 ```
 
-Откройте [http://localhost:3000](http://localhost:3000).
+Для локальной базы D1:
+
+```bash
+npm run db:local
+npx wrangler pages dev out
+```
+
+Для применения миграций в облачной базе:
+
+```bash
+npm run db:migrate
+```
 
 ## Telegram Mini App и Cloudflare Pages
 
-Сборка для Pages создаётся командой:
+Деплой нового проекта выполняется командой:
 
 ```bash
 npm run deploy:pages
 ```
 
-Секрет бота хранится только в Cloudflare Pages:
+Секреты хранятся только в Cloudflare Pages и не добавляются в Git:
 
 ```bash
-npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podocenter-crm
+npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podologymk-crm
+npx wrangler pages secret put CRM_ALLOWED_TELEGRAM_IDS --project-name podologymk-crm
 ```
 
-После деплоя настройте кнопку меню бота локально, не добавляя токен в Git:
+После публикации кнопка Telegram настраивается локально:
 
 ```bash
-TELEGRAM_BOT_TOKEN="новый-токен" MINI_APP_URL="https://podocenter-crm.pages.dev" npm run configure:telegram
+TELEGRAM_BOT_TOKEN="токен-бота" MINI_APP_URL="https://podologymk-crm.pages.dev" npm run configure:telegram
 ```
 
-## Следующий этап
-
-1. Подключить авторизацию и роли доступа.
-2. Подключить PostgreSQL к страницам и заменить демонстрационные данные на CRUD.
-3. Добавить расчёт зарплаты с фиксацией закрытого периода и журналом корректировок.
-4. Добавить импорт/экспорт и уведомления администратора.
+`CRM_ALLOWED_TELEGRAM_IDS` ограничивает доступ только разрешёнными Telegram ID. Не публикуйте токен бота в исходниках, коммитах и сообщениях.

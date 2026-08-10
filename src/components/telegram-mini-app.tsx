@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import { dispatchCrmEvent } from "@/lib/api-client";
+
 export function TelegramMiniApp() {
   useEffect(() => {
     const webApp = window.Telegram?.WebApp;
@@ -17,6 +19,8 @@ export function TelegramMiniApp() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ initData: webApp.initData }),
+      }).then((response) => {
+        if (response.ok) dispatchCrmEvent("crm:authenticated");
       }).catch(() => undefined);
     }
   }, []);

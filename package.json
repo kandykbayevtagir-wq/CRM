@@ -1,18 +1,19 @@
 {
-  "name": "podocenter-crm",
+  "name": "podologymk-crm",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "build:pages": "next build",
-    "deploy:pages": "npm run build:pages && npx wrangler pages deploy out --project-name podocenter-crm",
+    "deploy:pages": "npm run build:pages && npx wrangler pages deploy out --project-name podologymk-crm --branch main --commit-dirty=true",
+    "db:migrate": "npx wrangler d1 migrations apply podologymk_crm --remote",
+    "db:local": "npx wrangler d1 migrations apply podologymk_crm --local",
     "configure:telegram": "node scripts/configure-telegram-bot.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.0",
     "lucide-react": "^0.468.0",
     "next": "16.2.11",
     "react": "19.2.0",
@@ -22,8 +23,6 @@
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
-    "@cloudflare/workers-types": "^4.20250813.0",
-    "prisma": "^6.19.0",
     "typescript": "^5.7.3"
   }
 }
