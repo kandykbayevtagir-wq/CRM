@@ -92,7 +92,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="app-shell">
-      <button className="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Открыть меню">
+      <button className={`mobile-menu-button ${mobileOpen ? "mobile-menu-button-hidden" : ""}`} onClick={() => setMobileOpen(true)} aria-label="Открыть меню">
         <Menu size={20} />
       </button>
       {mobileOpen ? <button className="mobile-overlay" onClick={() => setMobileOpen(false)} aria-label="Закрыть меню" /> : null}
