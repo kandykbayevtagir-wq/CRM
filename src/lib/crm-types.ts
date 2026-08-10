@@ -5,6 +5,9 @@ export type AuthUser = {
   username: string | null;
   avatarUrl: string | null;
   role: string;
+  clientId: string | null;
+  phone: string | null;
+  notificationsAllowed: number;
 };
 
 export type AuthResponse = { ok: true; user: AuthUser };
@@ -88,6 +91,49 @@ export type DashboardResponse = {
 
 export type SettingsResponse = {
   ok: true;
-  settings: { brandName: string; currency: string; timezone: string };
+  settings: {
+    brandName: string;
+    currency: string;
+    timezone: string;
+    bookingStartTime: string;
+    bookingEndTime: string;
+    bookingSlotInterval: number;
+    workingDays: string;
+    cancellationWindowHours: number;
+    loyaltyPointsPer1000: number;
+  };
   branches: Branch[];
+};
+
+export type ServiceRecord = {
+  id: string;
+  name: string;
+  category: string;
+  price: number;
+  durationMinutes: number;
+  isActive: number;
+};
+
+export type AvailabilitySlot = {
+  startsAt: string;
+  endsAt: string;
+  employeeId: string;
+  employeeName: string;
+  branchId: string;
+  branchName: string;
+  serviceId: string;
+  price: number;
+};
+
+export type ClientAppointment = AppointmentRecord & {
+  serviceId: string | null;
+  reviewId: string | null;
+  checkInToken: string | null;
+  canCancel: boolean;
+};
+
+export type LoyaltyResponse = {
+  ok: true;
+  account: { pointsBalance: number; lifetimePoints: number };
+  transactions: Array<{ id: string; points: number; kind: string; description: string; createdAt: string }>;
 };

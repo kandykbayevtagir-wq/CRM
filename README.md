@@ -12,6 +12,13 @@
 - журнал изменений финансовых и справочных операций;
 - адаптивный интерфейс, пустые состояния, обработка ошибок и мягкие анимации;
 - предварительный расчёт зарплаты: фиксированная часть + процент от фактической выручки.
+- отдельный клиентский Mini App: профиль, онлайн-запись, перенос, отмена и лист ожидания;
+- каталог услуг с ценой и длительностью, рабочие часы специалистов и периоды отсутствия;
+- бонусная программа с историей начислений после завершённого визита;
+- отзывы клиентов с внутренней модерацией;
+- подтверждения записи и автоматические напоминания за 24 часа и за 2 часа;
+- check-in по одноразовому коду и сканирование QR внутри Telegram;
+- Telegram-команды `/start`, `/book`, `/appointments`, `/my_appointments` и deep links в Mini App.
 
 ## Запуск
 
@@ -47,6 +54,14 @@ npm run deploy:pages
 ```bash
 npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podologymk-crm
 npx wrangler pages secret put CRM_ALLOWED_TELEGRAM_IDS --project-name podologymk-crm
+npx wrangler pages secret put TELEGRAM_WEBHOOK_SECRET --project-name podologymk-crm
+```
+
+Планировщик напоминаний — отдельный Cloudflare Worker с D1-доступом:
+
+```bash
+npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.notifications.jsonc
+npm run deploy:notifications
 ```
 
 После публикации кнопка Telegram настраивается локально:

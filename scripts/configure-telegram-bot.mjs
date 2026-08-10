@@ -1,6 +1,7 @@
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const miniAppUrl = process.env.MINI_APP_URL;
 const chatId = process.env.TELEGRAM_CHAT_ID;
+const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
 
 if (!token || !miniAppUrl) {
   console.error("Set TELEGRAM_BOT_TOKEN and MINI_APP_URL before running this script.");
@@ -43,5 +44,13 @@ await telegram("setMyCommands", {
     { command: "help", description: "Помощь" },
   ],
 });
+
+if (webhookSecret) {
+  await telegram("setWebhook", {
+    url: `${miniAppUrl.replace(/\/$/, "")}/api/telegram/webhook`,
+    secret_token: webhookSecret,
+    allowed_updates: ["message", "callback_query"],
+  });
+}
 
 console.log(`Telegram Mini App configured: ${miniAppUrl}`);

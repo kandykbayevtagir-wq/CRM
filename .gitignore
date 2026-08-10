@@ -9,3 +9,5 @@ coverage
 dist
 src/generated
 *.tsbuildinfo
+.wrangler
+workers/*-configuration.d.ts

@@ -1,6 +1,8 @@
+import { Suspense } from "react";
+
 import { AppShell } from "@/components/app-shell";
-import { DashboardView } from "@/components/dashboard-view";
+import { HomeRouter } from "@/components/home-router";
 
 export default function DashboardPage() {
-  return <AppShell><DashboardView /></AppShell>;
+  return <Suspense fallback={null}><AppShell><HomeRouter /></AppShell></Suspense>;
 }

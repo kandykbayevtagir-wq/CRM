@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "podologymk-notifications",
+  "main": "./workers/notifications.ts",
+  "compatibility_date": "2026-08-10",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "podologymk_crm",
+      "database_id": "256e2d08-fba3-42e0-944a-b224ec80f9e0"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}

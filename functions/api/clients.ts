@@ -1,10 +1,11 @@
-import { getSessionUser, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
   const where = query ? "WHERE c.full_name LIKE ? OR c.phone LIKE ?" : "";
   const bindings = query ? [`%${query}%`, `%${query}%`] : [];
@@ -27,6 +28,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const body = await readJson(request);
   const fullName = stringValue(body, "fullName");
   const phone = stringValue(body, "phone");

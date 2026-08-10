@@ -1,4 +1,4 @@
-import { getSessionUser, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { json } from "../_lib/http";
 
@@ -7,6 +7,7 @@ type CountRow = { value: number | null };
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
 
   const [clients, todayAppointments, monthAppointments, revenue, expenses, payroll, upcoming, activeEmployees, revenueByDay] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS value FROM clients").first<CountRow>(),

@@ -1,10 +1,11 @@
-import { getSessionUser, unauthorized } from "../../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, newId, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const id = params.id;
   const existing = await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(id).first();
   if (!existing) return notFound("Клиент не найден");
@@ -22,6 +23,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
 export const onRequestDelete: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const result = await env.DB.prepare("DELETE FROM clients WHERE id = ?").bind(params.id).run();
   if (!result.success || result.meta.changes === 0) return notFound("Клиент не найден");
   await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'client', ?, 'DELETE')")

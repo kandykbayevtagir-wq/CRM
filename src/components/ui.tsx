@@ -115,6 +115,9 @@ const statusLabels: Record<string, string> = {
   inactive: "Неактивный",
   paid: "Оплачено",
   planned: "Запланировано",
+  pending: "На модерации",
+  published: "Опубликован",
+  hidden: "Скрыт",
 };
 
 export function StatusPill({ status }: { status: string }) {

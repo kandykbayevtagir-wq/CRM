@@ -25,10 +25,11 @@ export function formatDate(value: string) {
     day: "numeric",
     month: "long",
     year: "numeric",
+    timeZone: "Asia/Almaty",
   }).format(date);
 }
 
-export function formatDateTime(value: string | null | undefined) {
+export function formatDateTime(value: string | null | undefined, timeZone = "Asia/Almaty") {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -37,14 +38,15 @@ export function formatDateTime(value: string | null | undefined) {
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone,
   }).format(date);
 }
 
-export function formatTime(value: string | null | undefined) {
+export function formatTime(value: string | null | undefined, timeZone = "Asia/Almaty") {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone }).format(date);
 }
 
 export function dateInputValue(value = new Date()) {

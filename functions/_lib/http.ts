@@ -50,6 +50,10 @@ export function newId() {
   return crypto.randomUUID();
 }
 
+export function newCheckInToken() {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase();
+}
+
 export function now() {
   return new Date().toISOString();
 }

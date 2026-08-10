@@ -1,12 +1,13 @@
-import { getSessionUser, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, dateValue, json, newId, numberValue, optionalString, readJson, stringValue } from "../_lib/http";
+import { badRequest, dateValue, json, newCheckInToken, newId, numberValue, optionalString, readJson, stringValue } from "../_lib/http";
 
 const statuses = new Set(["SCHEDULED", "CONFIRMED", "ARRIVED", "IN_PROGRESS", "COMPLETED", "CANCELLED", "NO_SHOW"]);
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const search = new URL(request.url).searchParams.get("q")?.trim() ?? "";
   const result = search
     ? await env.DB.prepare(`
@@ -38,6 +39,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const body = await readJson(request);
   const startsAt = dateValue(body, "startsAt");
   const clientIdFromBody = stringValue(body, "clientId");
@@ -64,9 +66,9 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const branchId = optionalString(body, "branchId");
   const totalAmount = numberValue(body, "totalAmount");
   statements.push(env.DB.prepare(`
-    INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, status, total_amount, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(id, clientId, employeeId, branchId, startsAt, status, totalAmount, optionalString(body, "notes")));
+    INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, status, total_amount, notes, check_in_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(id, clientId, employeeId, branchId, startsAt, status, totalAmount, optionalString(body, "notes"), newCheckInToken()));
 
   const serviceName = stringValue(body, "serviceName");
   if (serviceName) {

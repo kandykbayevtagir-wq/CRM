@@ -6,7 +6,9 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   Bell,
+  BriefcaseBusiness,
   CalendarDays,
+  CalendarClock,
   ChevronDown,
   CircleHelp,
   ClipboardList,
@@ -16,6 +18,7 @@ import {
   Menu,
   Settings,
   ShieldCheck,
+  Star,
   UsersRound,
   WalletCards,
   X,
@@ -23,6 +26,7 @@ import {
 
 import { useApi } from "@/lib/use-api";
 import type { AuthResponse, SettingsResponse } from "@/lib/crm-types";
+import { ClientShell } from "@/components/client-shell";
 
 const primaryNavigation = [
   { href: "/", label: "Обзор", icon: LayoutDashboard },
@@ -32,6 +36,9 @@ const primaryNavigation = [
 ];
 
 const financeNavigation = [
+  { href: "/services", label: "Услуги", icon: BriefcaseBusiness },
+  { href: "/schedules", label: "Расписание", icon: CalendarClock },
+  { href: "/reviews", label: "Отзывы", icon: Star },
   { href: "/finance", label: "Финансы", icon: WalletCards },
   { href: "/reports", label: "Отчёты", icon: FileBarChart },
 ];
@@ -44,9 +51,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const user = auth?.user;
   const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
-  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/finance": "Финансы", "/reports": "Отчёты", "/settings": "Настройки" };
+  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/reports": "Отчёты", "/settings": "Настройки" };
   const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
   const branchName = settings?.branches?.length ? `Все филиалы · ${settings.branches.length}` : "Филиалы пока не добавлены";
+
+  if (user?.role === "CLIENT") return <ClientShell user={user}>{children}</ClientShell>;
 
   return (
     <div className="app-shell">

@@ -1,10 +1,11 @@
-import { getSessionUser, unauthorized } from "../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, dateValue, json, newId, numberValue, optionalString, readJson, stringValue } from "../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
   const result = query
     ? await env.DB.prepare(`
@@ -26,6 +27,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const body = await readJson(request);
   const title = stringValue(body, "title");
   const category = stringValue(body, "category");

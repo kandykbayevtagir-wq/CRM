@@ -1,10 +1,11 @@
-import { getSessionUser, unauthorized } from "../../_lib/auth";
+import { forbidden, getSessionUser, isStaff, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { json, newId, notFound, optionalString, numberValue, readJson, stringValue } from "../../_lib/http";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const existing = await env.DB.prepare("SELECT * FROM employees WHERE id = ?").bind(params.id).first();
   if (!existing) return notFound("Сотрудник не найден");
   const body = await readJson(request);
@@ -28,6 +29,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
 export const onRequestDelete: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
+  if (!isStaff(user)) return forbidden();
   const result = await env.DB.prepare("UPDATE employees SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(params.id).run();
   if (!result.success || result.meta.changes === 0) return notFound("Сотрудник не найден");
   await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'employee', ?, 'ARCHIVE')")

@@ -10,6 +10,9 @@ export type AuthUser = {
   username: string | null;
   avatarUrl: string | null;
   role: string;
+  clientId: string | null;
+  phone: string | null;
+  notificationsAllowed: number;
 };
 
 async function sha256Hex(value: string) {
@@ -33,7 +36,8 @@ export async function getSessionUser(request: Request, db: D1Database): Promise<
 
   const tokenHash = await sha256Hex(rawToken);
   const row = await db.prepare(`
-    SELECT u.id, u.telegram_id AS telegramId, u.name, u.username, u.avatar_url AS avatarUrl, u.role
+    SELECT u.id, u.telegram_id AS telegramId, u.name, u.username, u.avatar_url AS avatarUrl, u.role,
+      u.client_id AS clientId, u.phone, u.notifications_allowed AS notificationsAllowed
     FROM sessions s
     INNER JOIN users u ON u.id = s.user_id
     WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP
@@ -45,6 +49,18 @@ export async function getSessionUser(request: Request, db: D1Database): Promise<
 
 export function unauthorized() {
   return json({ ok: false, error: "Telegram authorization required" }, 401);
+}
+
+export function forbidden(message = "Недостаточно прав для этой операции") {
+  return json({ ok: false, error: message }, 403);
+}
+
+export function isStaff(user: AuthUser | null): user is AuthUser {
+  return Boolean(user && user.role !== "CLIENT");
+}
+
+export function isClient(user: AuthUser | null): user is AuthUser {
+  return Boolean(user && user.role === "CLIENT");
 }
 
 export async function createSession(db: D1Database, userId: string) {

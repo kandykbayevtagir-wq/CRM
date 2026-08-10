@@ -11,6 +11,12 @@ import { useApi } from "@/lib/use-api";
 
 export function SettingsView() {
   const [brandName, setBrandName] = useState("");
+  const [bookingStartTime, setBookingStartTime] = useState("09:00");
+  const [bookingEndTime, setBookingEndTime] = useState("18:00");
+  const [bookingSlotInterval, setBookingSlotInterval] = useState(30);
+  const [workingDays, setWorkingDays] = useState("1,2,3,4,5,6");
+  const [cancellationWindowHours, setCancellationWindowHours] = useState(2);
+  const [loyaltyPointsPer1000, setLoyaltyPointsPer1000] = useState(1);
   const [saving, setSaving] = useState(false);
   const [branchModalOpen, setBranchModalOpen] = useState(false);
   const [branchSaving, setBranchSaving] = useState(false);
@@ -18,14 +24,21 @@ export function SettingsView() {
   const { data, loading, error, reload } = useApi<SettingsResponse>("/api/settings");
 
   useEffect(() => {
-    if (data?.settings?.brandName) setBrandName(data.settings.brandName);
-  }, [data?.settings?.brandName]);
+    if (!data?.settings) return;
+    setBrandName(data.settings.brandName);
+    setBookingStartTime(data.settings.bookingStartTime);
+    setBookingEndTime(data.settings.bookingEndTime);
+    setBookingSlotInterval(Number(data.settings.bookingSlotInterval));
+    setWorkingDays(data.settings.workingDays);
+    setCancellationWindowHours(Number(data.settings.cancellationWindowHours));
+    setLoyaltyPointsPer1000(Number(data.settings.loyaltyPointsPer1000));
+  }, [data?.settings]);
 
   async function saveSettings() {
     setSaving(true);
     setFormError(null);
     try {
-      await apiFetch("/api/settings", { method: "PATCH", body: { brandName } });
+      await apiFetch("/api/settings", { method: "PATCH", body: { brandName, bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays, cancellationWindowHours, loyaltyPointsPer1000 } });
       dispatchCrmEvent("crm:data-changed");
       await reload();
     } catch (cause) {
@@ -66,6 +79,17 @@ export function SettingsView() {
           <div className="settings-form"><FormField label="Название организации"><input value={brandName} onChange={(event) => setBrandName(event.target.value)} /></FormField></div>
           <div className="settings-list"><div className="settings-item"><div><strong>Валюта</strong><span>Используется в расчётах</span></div><span className="settings-value">{data.settings.currency} · Тенге</span></div><div className="settings-item"><div><strong>Часовой пояс</strong><span>Для календаря и уведомлений</span></div><span className="settings-value">{data.settings.timezone}</span></div></div>
           {formError ? <p className="form-error">{formError}</p> : null}
+        </SectionCard>
+
+        <SectionCard title="Правила записи" subtitle="Эти параметры используются клиентским календарём">
+          <div className="form-grid settings-rules-grid">
+            <FormField label="Начало рабочего дня"><input type="time" value={bookingStartTime} onChange={(event) => setBookingStartTime(event.target.value)} /></FormField>
+            <FormField label="Конец рабочего дня"><input type="time" value={bookingEndTime} onChange={(event) => setBookingEndTime(event.target.value)} /></FormField>
+            <FormField label="Шаг календаря"><select value={bookingSlotInterval} onChange={(event) => setBookingSlotInterval(Number(event.target.value))}><option value={15}>15 минут</option><option value={30}>30 минут</option><option value={60}>60 минут</option></select></FormField>
+            <FormField label="Отмена не позднее, чем за"><input type="number" min={0} max={72} value={cancellationWindowHours} onChange={(event) => setCancellationWindowHours(Number(event.target.value))} /></FormField>
+            <FormField label="Рабочие дни" className="form-field-wide"><input value={workingDays} onChange={(event) => setWorkingDays(event.target.value)} placeholder="1,2,3,4,5,6" /><small className="field-hint">1 — понедельник, 7 — воскресенье</small></FormField>
+            <FormField label="Бонусов за каждые 1 000 ₸" className="form-field-wide"><input type="number" min={0} max={100} value={loyaltyPointsPer1000} onChange={(event) => setLoyaltyPointsPer1000(Number(event.target.value))} /></FormField>
+          </div>
         </SectionCard>
 
         <SectionCard title="Филиалы" subtitle="Используются в записях, сотрудниках и расходах" action={<Button variant="secondary" onClick={() => { setFormError(null); setBranchModalOpen(true); }}><Plus size={14} /> Добавить</Button>}>
