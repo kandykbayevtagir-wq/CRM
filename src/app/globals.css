@@ -460,6 +460,7 @@ a {
 .popover-empty svg { color: var(--purple); }
 .popover-empty strong { color: var(--ink); font-size: 12px; }
 .popover-empty span { max-width: 250px; font-size: 10px; line-height: 1.45; }
+.popover-empty .button { margin-top: 4px; }
 .profile-popover { width: min(340px, calc(100vw - 32px)); }
 .profile-popover-header { display: flex; align-items: center; gap: 11px; padding: 2px 2px 15px; border-bottom: 1px solid rgba(225, 223, 240, .8); }
 .profile-popover-avatar { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; color: #fff; background: linear-gradient(145deg, #7764e8, #40345f); border: 3px solid rgba(255,255,255,.72); border-radius: 14px; box-shadow: 0 8px 18px rgba(73, 56, 153, .2); font-size: 12px; font-weight: 800; }
@@ -472,6 +473,7 @@ a {
 .profile-facts span { color: var(--ink-faint); font-size: 9px; }
 .profile-facts strong { margin-top: 3px; color: var(--ink); font-size: 10px; font-weight: 700; }
 .profile-status { display: flex; align-items: flex-start; gap: 9px; padding: 10px; color: var(--ink-soft); background: rgba(233,248,241,.72); border: 1px solid rgba(208,239,225,.9); border-radius: 10px; font-size: 10px; line-height: 1.4; }
+.profile-status-warning { background: rgba(255,246,226,.78); border-color: rgba(247,225,171,.95); }
 .profile-status .cloud-status-dot { margin-top: 3px; }
 .profile-popover-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 13px; }
 .profile-popover-actions .button { height: 33px; font-size: 10px; }
