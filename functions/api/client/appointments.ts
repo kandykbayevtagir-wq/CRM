@@ -19,7 +19,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
       c.full_name AS clientName, c.phone AS clientPhone,
       (SELECT aps.service_id FROM appointment_services aps WHERE aps.appointment_id = a.id LIMIT 1) AS serviceId,
       (SELECT s.name FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id LIMIT 1) AS serviceName,
-      e.full_name AS employeeName, b.id AS branchId, b.name AS branchName,
+      a.employee_id AS employeeId, e.full_name AS employeeName, b.id AS branchId, b.name AS branchName,
       r.id AS reviewId, a.check_in_token AS checkInToken,
       CASE WHEN julianday(a.starts_at) > julianday('now', '+' || (SELECT cancellation_window_hours FROM organization_settings WHERE id = 1) || ' hours') AND a.status IN ('SCHEDULED', 'CONFIRMED') THEN 1 ELSE 0 END AS canCancel
     FROM appointments a
@@ -94,8 +94,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   ];
   try {
     await env.DB.batch([...appointmentStatements, ...notificationStatements]);
-  } catch {
-    return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
+  } catch (cause) {
+    const databaseMessage = cause instanceof Error ? cause.message : "";
+    if (/unique|constraint|idx_appointments_active_employee_start/i.test(databaseMessage)) {
+      return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
+    }
+    return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);
   }
   const message = appointmentMessage(client?.fullName ?? user.name, startsAt, service?.name ?? "Приём", branch?.name ?? "Филиал", changed);
   context.waitUntil(sendTelegramMessage(env, user.telegramId, message).then(() => env.DB.prepare("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()).catch(() => env.DB.prepare("UPDATE notifications SET status = 'FAILED', attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()));

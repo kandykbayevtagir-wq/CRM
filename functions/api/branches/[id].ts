@@ -2,6 +2,7 @@ import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
+import { optionalPhoneValue } from "../../_lib/validation";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -13,9 +14,11 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const body = await readJson(request);
   const name = stringValue(body, "name", String(existing.name ?? ""));
   if (!name) return badRequest("Название филиала обязательно");
+  const phone = optionalPhoneValue(body);
+  if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
   const active = body.isActive === undefined ? Number(existing.is_active ?? 1) : body.isActive === false || body.isActive === "false" ? 0 : 1;
   await env.DB.batch([
-    env.DB.prepare("UPDATE branches SET name = ?, address = ?, phone = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(name, body.address === null ? null : optionalString(body, "address") ?? existing.address ?? null, body.phone === null ? null : optionalString(body, "phone") ?? existing.phone ?? null, active, id),
+    env.DB.prepare("UPDATE branches SET name = ?, address = ?, phone = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(name, body.address === null ? null : optionalString(body, "address") ?? existing.address ?? null, body.phone === null ? null : phone.provided ? phone.value : existing.phone ?? null, active, id),
     auditStatement(env.DB, user, "branch", id, "UPDATE", { name: existing.name, isActive: existing.is_active }, { name, isActive: active }),
   ]);
   return json({ ok: true });

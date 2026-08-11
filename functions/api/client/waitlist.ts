@@ -23,9 +23,19 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const body = await readJson(request);
   const serviceId = optionalString(body, "serviceId");
   const branchId = optionalString(body, "branchId");
+  const employeeId = optionalString(body, "employeeId");
+  const preferredDate = optionalString(body, "preferredDate");
   if (!serviceId && !branchId) return badRequest("Выберите хотя бы услугу или филиал");
   const id = newId();
-  await env.DB.prepare("INSERT INTO client_waitlist (id, client_id, service_id, branch_id, employee_id, preferred_date) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(id, user.clientId, serviceId, branchId, optionalString(body, "employeeId"), optionalString(body, "preferredDate")).run();
+  const result = await env.DB.prepare(`
+    INSERT INTO client_waitlist (id, client_id, service_id, branch_id, employee_id, preferred_date)
+    SELECT ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM client_waitlist
+      WHERE client_id = ? AND service_id IS ? AND branch_id IS ? AND employee_id IS ? AND preferred_date IS ?
+        AND status IN ('ACTIVE', 'OFFERED')
+    )
+  `).bind(id, user.clientId, serviceId, branchId, employeeId, preferredDate, user.clientId, serviceId, branchId, employeeId, preferredDate).run();
+  if (!result.meta.changes) return json({ ok: false, error: "Вы уже добавлены в лист ожидания на этот запрос.", code: "WAITLIST_DUPLICATE" }, 409);
   return json({ ok: true, id }, 201);
 };

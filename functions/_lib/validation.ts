@@ -10,6 +10,13 @@ export function requirePhone(value: string): string | null {
   return isValidPhone(value) ? normalizePhone(value) : null;
 }
 
+export function optionalPhoneValue(body: JsonRecord, key = "phone") {
+  const raw = typeof body[key] === "string" ? String(body[key]).trim() : "";
+  if (!raw) return { provided: false, value: null as string | null };
+  if (raw.replace(/\s/g, "") === "+7") return { provided: true, value: null as string | null };
+  return { provided: true, value: requirePhone(phoneValue(body, key)) };
+}
+
 export function nonNegativeNumber(value: unknown, _label: string): number | null {
   const number = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(number) || number < 0) return null;

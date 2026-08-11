@@ -1,3 +1,27 @@
+# v0.3.0 — Client Experience & Smart Forms
+
+Дата: 2026-08-11
+
+## Добавлено
+
+- единый Kazakhstan phone source of truth: `normalizePhone`, `formatKzPhone`, `getKzNationalDigits`, `toKzE164`;
+- smart `PhoneInput` на onboarding, профиле, клиентах, сотрудниках и филиалах;
+- structured field errors и человекочитаемый error map для client API;
+- Telegram-prefill имени в onboarding и безопасное восстановление при duplicate phone/linking конфликте;
+- профиль-карточка в режиме чтения, отдельное редактирование, reminders и связь с администратором;
+- booking recovery: быстрые даты, специалист по желанию, ближайшее окно, waitlist duplicate protection, haptic feedback и success state;
+- reschedule с сохранением старой записи до успешного подтверждения нового времени;
+- appointment history с группировкой, inline cancellation confirmation, повторной записью и contextual reviews;
+- request race protection для availability через `AbortController` и request identity;
+- Telegram safe-area CSS variables, BackButton, keyboard cleanup и мобильные touch targets;
+- тесты эквивалентных форматов телефонов и обновление версии проекта до `0.3.0`.
+
+## Проверки
+
+- `npm run typecheck`
+- `npm run lint`
+- `npm run test`
+
 # v0.2.0 — Real CRM Core
 
 Дата: 2026-08-10

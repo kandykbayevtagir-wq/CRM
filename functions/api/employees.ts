@@ -3,6 +3,7 @@ import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_l
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson } from "../_lib/http";
 import { branchIds, employeeValues } from "../_lib/employee";
+import { optionalPhoneValue } from "../_lib/validation";
 
 const employeeQuery = `
   SELECT e.id, e.full_name AS fullName, e.position, e.phone, e.email,
@@ -32,12 +33,14 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!hasCrmPermission(user, "employees.write")) return forbidden();
   const body = await readJson(request);
   const values = employeeValues(body);
+  const phone = optionalPhoneValue(body);
   if (!values.fullName || !values.position || values.fixedSalary < 0 || values.revenuePercent < 0) return badRequest("Проверьте имя, должность и зарплатные настройки");
+  if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
   const ids = branchIds(body);
   const id = newId();
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`INSERT INTO employees (id, full_name, position, phone, email, branch_id, user_id, fixed_salary, revenue_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, values.fullName, values.position, optionalString(body, "phone"), optionalString(body, "email"), ids[0] ?? null, optionalString(body, "userId"), values.fixedSalary, values.revenuePercent),
+      .bind(id, values.fullName, values.position, phone.value, optionalString(body, "email"), ids[0] ?? null, optionalString(body, "userId"), values.fixedSalary, values.revenuePercent),
   ];
   for (const [index, branchId] of ids.entries()) statements.push(env.DB.prepare("INSERT INTO employee_branches (employee_id, branch_id, is_primary) VALUES (?, ?, ?)").bind(id, branchId, index === 0 ? 1 : 0));
   statements.push(auditStatement(env.DB, user, "employee", id, "CREATE", null, { fullName: values.fullName, position: values.position, branchIds: ids }));

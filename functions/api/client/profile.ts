@@ -29,7 +29,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const fullName = stringValue(body, "fullName");
   const phoneRaw = stringValue(body, "phone");
   const phone = requirePhone(phoneValue({ phone: phoneRaw }));
-  if (!fullName || !phone) return badRequest("Укажите имя и корректный номер телефона");
+  if (!fullName) return badRequest("Проверьте данные", { fullName: "Введите имя и фамилию" });
+  if (!phone) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
   const email = optionalString(body, "email");
   const notes = optionalString(body, "notes");
   const existingByPhone = await env.DB.prepare(`
@@ -38,8 +39,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     FROM clients c
     WHERE c.phone_normalized = ? AND c.is_active = 1 LIMIT 1
   `).bind(user.id, phone).first<{ id: string; linked: number }>();
-  if (existingByPhone && user.clientId && existingByPhone.id !== user.clientId) return badRequest("Этот номер уже привязан к другой карточке");
-  if (existingByPhone && !user.clientId && existingByPhone.linked === 1) return badRequest("Этот номер уже привязан к другому кабинету");
+  if (existingByPhone && user.clientId && existingByPhone.id !== user.clientId) return badRequest("Проверьте данные", { phone: "Этот номер уже привязан к другой карточке" });
+  if (existingByPhone && !user.clientId && existingByPhone.linked === 1) return badRequest("Проверьте данные", { phone: "Этот номер уже связан с другим личным кабинетом. Если это ваш номер, напишите администратору." });
   const clientId = user.clientId ?? existingByPhone?.id ?? newId();
   const statements: D1PreparedStatement[] = [];
   const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;

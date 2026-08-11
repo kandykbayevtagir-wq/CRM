@@ -17,6 +17,21 @@ declare global {
     offEvent?: (eventType: string, callback: () => void) => void;
     disableVerticalSwipes?: () => void;
     enableVerticalSwipes?: () => void;
+    hideKeyboard?: () => void;
+    openTelegramLink?: (url: string) => void;
+    openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+    BackButton?: {
+      isVisible?: boolean;
+      show: () => void;
+      hide: () => void;
+      onClick: (callback: () => void) => void;
+      offClick: (callback: () => void) => void;
+    };
+    HapticFeedback?: {
+      impactOccurred?: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
+      notificationOccurred?: (type: "error" | "success" | "warning") => void;
+      selectionChanged?: () => void;
+    };
     requestFullscreen?: () => void;
     isVersionAtLeast?: (version: string) => boolean;
     requestWriteAccess?: (callback?: (allowed: boolean) => void) => void;

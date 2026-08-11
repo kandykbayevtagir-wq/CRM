@@ -164,8 +164,12 @@ export type AvailabilitySlot = {
   price: number;
 };
 
+export type AvailabilityResponse = { ok: true; items: AvailabilitySlot[]; next?: AvailabilitySlot | null };
+
 export type ClientAppointment = AppointmentRecord & {
   serviceId: string | null;
+  branchId?: string | null;
+  employeeId?: string | null;
   reviewId: string | null;
   checkInToken: string | null;
   canCancel: boolean;

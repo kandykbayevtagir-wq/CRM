@@ -47,8 +47,12 @@ export function Modal({ title, children, footer, onClose }: { title: string; chi
   );
 }
 
-export function FormField({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
-  return <label className={`form-field ${className}`}><span>{label}</span>{children}</label>;
+export function FormField({ label, children, className = "", error, hint, errorId }: { label: string; children: ReactNode; className?: string; error?: string; hint?: string; errorId?: string }) {
+  return <label className={`form-field ${className} ${error ? "form-field-invalid" : ""}`}><span>{label}</span>{children}{hint ? <small className="field-hint">{hint}</small> : null}{error ? <small id={errorId} className="field-error" role="alert">{error}</small> : null}</label>;
+}
+
+export function InlineError({ children }: { children: ReactNode }) {
+  return <p className="form-error" role="alert">{children}</p>;
 }
 
 export function AuthHint() {

@@ -5,13 +5,30 @@ import { calculateLedgerTotals } from "../src/lib/finance/ledger";
 import { remainingPaymentBalance } from "../src/lib/finance/payments";
 import { calculateOccupancy, calculatePayroll } from "../src/lib/finance/payroll";
 import { hasPermission } from "../src/lib/permissions";
-import { isValidPhone, normalizePhone } from "../src/lib/validation/phone";
+import { formatKzPhone, isValidPhone, normalizePhone, toKzE164 } from "../src/lib/validation/phone";
 
 describe("phone normalization", () => {
   it("normalizes Kazakhstan formats consistently", () => {
-    expect(normalizePhone("+7 (700) 123-45-67")).toBe("77001234567");
-    expect(normalizePhone("8 700 123 45 67")).toBe("77001234567");
+    const equivalent = [
+      "+7 700 123 45 67",
+      "+77001234567",
+      "7 700 123 45 67",
+      "77001234567",
+      "8 700 123 45 67",
+      "87001234567",
+      "700 123 45 67",
+      "7001234567",
+    ];
+    for (const value of equivalent) expect(normalizePhone(value)).toBe("77001234567");
     expect(isValidPhone("+7 700 123 45 67")).toBe(true);
+    expect(formatKzPhone("87001234567")).toBe("+7 700 123 45 67");
+    expect(toKzE164("7001234567")).toBe("+77001234567");
+  });
+
+  it("rejects incomplete and overlong Kazakhstan numbers", () => {
+    expect(normalizePhone("+7 700 123")).toBe("700123");
+    expect(isValidPhone("+7 700 123")).toBe(false);
+    expect(isValidPhone("+7 700 123 45 678")).toBe(false);
   });
 });
 

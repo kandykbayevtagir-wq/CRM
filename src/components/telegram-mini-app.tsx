@@ -42,6 +42,10 @@ export function TelegramMiniApp() {
       const contentArea = webApp.contentSafeAreaInset ?? {};
       root.style.setProperty("--tg-safe-top", `${Math.max(safeArea.top ?? 0, contentArea.top ?? 0)}px`);
       root.style.setProperty("--tg-safe-bottom", `${Math.max(safeArea.bottom ?? 0, contentArea.bottom ?? 0)}px`);
+      root.style.setProperty("--tg-safe-area-inset-top", `${safeArea.top ?? 0}px`);
+      root.style.setProperty("--tg-safe-area-inset-bottom", `${safeArea.bottom ?? 0}px`);
+      root.style.setProperty("--tg-content-safe-area-inset-top", `${contentArea.top ?? 0}px`);
+      root.style.setProperty("--tg-content-safe-area-inset-bottom", `${contentArea.bottom ?? 0}px`);
     };
 
     const configure = (webApp: TelegramWebApp) => {

@@ -10,6 +10,7 @@ import { Amount, Avatar, Button, PageHeader, SectionCard, StatusPill } from "@/c
 import type { ClientRecord } from "@/lib/crm-types";
 import { formatDateTime, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
+import { PhoneInput } from "@/components/phone-input";
 
 type ClientResponse = { ok: true; items: ClientRecord[]; total: number; page: number; pageSize: number; pages: number };
 
@@ -96,7 +97,7 @@ export function ClientsView() {
       {modalOpen ? <Modal title="Добавить клиента" onClose={() => setModalOpen(false)} footer={<><Button variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button><button className="button button-primary" type="submit" form="client-form" disabled={saving}>{saving ? "Сохраняем…" : "Сохранить клиента"}</button></>}>
         <form id="client-form" className="form-grid" onSubmit={createClient}>
           <FormField label="Имя и фамилия"><input name="fullName" required placeholder="Например, Анна Иванова" autoFocus /></FormField>
-          <FormField label="Телефон"><input name="phone" required placeholder="+7 700 000 00 00" /></FormField>
+          <FormField label="Телефон"><PhoneInput required placeholder="+7 700 123 45 67" enterKeyHint="next" /></FormField>
           <FormField label="Email"><input name="email" type="email" placeholder="client@example.com" /></FormField>
           <FormField label="Заметка" className="form-field-wide"><textarea name="notes" placeholder="Важная информация о клиенте" rows={3} /></FormField>
           {formError ? <p className="form-error form-field-wide">{formError}</p> : null}

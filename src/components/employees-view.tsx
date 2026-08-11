@@ -9,6 +9,7 @@ import { Amount, Avatar, Button, PageHeader, SectionCard } from "@/components/ui
 import type { Branch, EmployeeRecord } from "@/lib/crm-types";
 import { formatCurrency, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
+import { PhoneInput } from "@/components/phone-input";
 
 type EmployeeResponse = { ok: true; items: EmployeeRecord[] };
 type BranchResponse = { ok: true; items: Branch[] };
@@ -94,7 +95,7 @@ export function EmployeesView() {
         <form id="employee-form" className="form-grid" onSubmit={createEmployee}>
           <FormField label="Имя и фамилия"><input name="fullName" required placeholder="Имя сотрудника" autoFocus /></FormField>
           <FormField label="Должность"><input name="position" required placeholder="Подолог" /></FormField>
-          <FormField label="Телефон"><input name="phone" placeholder="+7 700 000 00 00" /></FormField>
+          <FormField label="Телефон"><PhoneInput placeholder="+7 700 123 45 67" enterKeyHint="next" /></FormField>
           <FormField label="Email"><input name="email" type="email" placeholder="employee@example.com" /></FormField>
           <FormField label="Филиалы"><select name="branchIds" multiple size={Math.min(4, Math.max(2, branches?.items.length ?? 2))} defaultValue={[]}>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><small className="form-hint">Можно выбрать несколько филиалов. Первый будет основным.</small></FormField>
           <FormField label="Фиксированная часть, ₸"><input name="fixedSalary" type="number" min="0" step="1" placeholder="0" /></FormField>

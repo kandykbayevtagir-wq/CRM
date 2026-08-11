@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, readJson, stringValue } from "../_lib/http";
+import { optionalPhoneValue } from "../_lib/validation";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -17,9 +18,11 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const body = await readJson(request);
   const name = stringValue(body, "name");
   if (!name) return badRequest("Название филиала обязательно");
+  const phone = optionalPhoneValue(body);
+  if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
   const id = newId();
   await env.DB.prepare("INSERT INTO branches (id, name, address, phone) VALUES (?, ?, ?, ?)")
-    .bind(id, name, stringValue(body, "address") || null, stringValue(body, "phone") || null)
+    .bind(id, name, stringValue(body, "address") || null, phone.value)
     .run();
   await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, after_json) VALUES (?, ?, 'branch', ?, 'CREATE', ?)")
     .bind(newId(), user.id, id, JSON.stringify({ name })).run();

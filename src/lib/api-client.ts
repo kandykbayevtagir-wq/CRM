@@ -1,11 +1,24 @@
 export class ApiError extends Error {
   readonly status: number;
+  readonly fieldErrors: Record<string, string>;
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, fieldErrors: Record<string, string> = {}, code: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.fieldErrors = fieldErrors;
+    this.code = code;
   }
+}
+
+function humanizeApiError(status: number, message: string, code: string | null) {
+  if (code === "SLOT_UNAVAILABLE") return "Это время только что заняли. Мы обновим свободные окна — выберите другое.";
+  if (status === 401) return "Авторизация Telegram истекла. Откройте Mini App заново через Telegram.";
+  if (code === "WAITLIST_DUPLICATE") return "Вы уже добавлены в лист ожидания на этот запрос.";
+  if (status === 403) return "Для этого действия нет доступа.";
+  if (status >= 500 || /sqlite|constraint|invalid payload|internal server/i.test(message)) return "Что-то пошло не так. Попробуйте ещё раз.";
+  return message;
 }
 
 type ApiRequestInit = Omit<RequestInit, "body"> & { body?: BodyInit | Record<string, unknown> };
@@ -29,17 +42,24 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(requestPath, {
-    ...init,
-    body,
-    headers,
-    credentials: "include",
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(requestPath, {
+      ...init,
+      body,
+      headers,
+      credentials: "include",
+      cache: "no-store",
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+    throw new ApiError("Не удалось подключиться. Проверьте интернет и попробуйте ещё раз.", 0);
+  }
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string } & T;
+  const payload = (await response.json().catch(() => ({}))) as { error?: string; fieldErrors?: Record<string, string>; code?: string } & T;
   if (!response.ok) {
-    throw new ApiError(payload.error ?? "Не удалось выполнить запрос", response.status);
+    const rawMessage = payload.error ?? "Не удалось выполнить запрос";
+    throw new ApiError(humanizeApiError(response.status, rawMessage, payload.code ?? null), response.status, payload.fieldErrors ?? {}, payload.code ?? null);
   }
 
   return payload;

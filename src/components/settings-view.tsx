@@ -8,6 +8,7 @@ import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState,
 import { Button, PageHeader, SectionCard } from "@/components/ui";
 import type { ClientRecord, SettingsResponse } from "@/lib/crm-types";
 import { useApi } from "@/lib/use-api";
+import { PhoneInput } from "@/components/phone-input";
 
 type UserRecord = { id: string; telegramId: string; username: string | null; name: string; role: string; active: number; clientId: string | null; lastLoginAt: string | null; createdAt: string };
 type UsersResponse = { ok: true; items: UserRecord[] };
@@ -143,7 +144,7 @@ export function SettingsView() {
       </div> : null}
 
       {branchModalOpen ? <Modal title="Добавить филиал" onClose={() => setBranchModalOpen(false)} footer={<><Button variant="secondary" onClick={() => setBranchModalOpen(false)}>Отмена</Button><button className="button button-primary" type="submit" form="branch-form" disabled={branchSaving}>{branchSaving ? "Сохраняем…" : "Сохранить филиал"}</button></>}>
-        <form id="branch-form" className="form-grid" onSubmit={createBranch}><FormField label="Название"><input name="name" required placeholder="Например, Центральный филиал" autoFocus /></FormField><FormField label="Телефон"><input name="phone" placeholder="+7 700 000 00 00" /></FormField><FormField label="Адрес" className="form-field-wide"><input name="address" placeholder="Адрес филиала" /></FormField>{formError ? <p className="form-error form-field-wide">{formError}</p> : null}</form>
+        <form id="branch-form" className="form-grid" onSubmit={createBranch}><FormField label="Название"><input name="name" required placeholder="Например, Центральный филиал" autoFocus /></FormField><FormField label="Телефон"><PhoneInput placeholder="+7 700 123 45 67" /></FormField><FormField label="Адрес" className="form-field-wide"><input name="address" required placeholder="Адрес филиала" /></FormField>{formError ? <p className="form-error form-field-wide">{formError}</p> : null}</form>
       </Modal> : null}
 
       {userModalOpen ? <Modal title="Пригласить пользователя" onClose={() => setUserModalOpen(false)} footer={<><Button variant="secondary" onClick={() => setUserModalOpen(false)}>Отмена</Button><button className="button button-primary" type="submit" form="user-form" disabled={userSaving}>{userSaving ? "Сохраняем…" : "Создать доступ"}</button></>}>

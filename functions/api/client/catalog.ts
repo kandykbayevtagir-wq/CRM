@@ -11,5 +11,5 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     env.DB.prepare("SELECT id, name, address, phone, is_active AS isActive FROM branches WHERE is_active = 1 ORDER BY name ASC").all(),
     user.clientId ? env.DB.prepare("SELECT id, full_name AS fullName, phone, email FROM clients WHERE id = ?").bind(user.clientId).first() : Promise.resolve(null),
   ]);
-  return json({ ok: true, profile, services: services.results ?? [], branches: branches.results ?? [] });
+  return json({ ok: true, user: { name: user.name }, profile, services: services.results ?? [], branches: branches.results ?? [] });
 };

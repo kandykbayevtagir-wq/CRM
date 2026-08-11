@@ -58,8 +58,8 @@ export function now() {
   return new Date().toISOString();
 }
 
-export function badRequest(message: string) {
-  return json({ ok: false, error: message }, 400);
+export function badRequest(message: string, fieldErrors?: Record<string, string>) {
+  return json({ ok: false, error: message, ...(fieldErrors ? { fieldErrors } : {}) }, 400);
 }
 
 export function conflict(message: string) {
