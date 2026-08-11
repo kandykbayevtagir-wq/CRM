@@ -2233,6 +2233,17 @@ a {
 .payroll-drilldown svg.rotated { transform: rotate(180deg); }
 .payroll-breakdown { display: grid; gap: 8px; padding: 10px 2px; color: var(--ink-soft); font-size: 11px; }
 .payroll-breakdown > strong { color: var(--ink); }
+.chart-bars { min-height: 150px; display: flex; align-items: end; gap: 7px; padding: 12px 2px 0; }
+.chart-bar-column { min-width: 0; flex: 1; display: flex; align-items: center; flex-direction: column; gap: 7px; }
+.chart-bar-track { width: 100%; height: 125px; display: flex; align-items: end; background: #f4f3f9; border-radius: 7px 7px 3px 3px; overflow: hidden; }
+.chart-bar-fill { width: 100%; min-height: 4px; background: linear-gradient(180deg, #8f80eb, #b6aef5); border-radius: 7px 7px 2px 2px; transition: height .25s ease; }
+.chart-bar-column small { color: var(--ink-faint); font-size: 9px; }
+.chart-bars-horizontal { display: grid; align-content: start; gap: 12px; min-height: 150px; }
+.chart-horizontal-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 10px; }
+.chart-horizontal-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-horizontal-row strong { color: var(--ink); font-size: 10px; }
+.chart-horizontal-track { height: 8px; overflow: hidden; background: #f4f3f9; border-radius: 99px; }
+.chart-horizontal-fill { height: 100%; background: #79c89e; border-radius: inherit; transition: width .25s ease; }
 .reconciliation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .reconciliation-item { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border: 1px solid var(--line); border-radius: 11px; }
 .reconciliation-icon { flex: 0 0 auto; margin-top: 1px; }
