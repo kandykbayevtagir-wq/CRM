@@ -31,7 +31,7 @@
 - payroll engine: фикс + процент от оплаченной части завершённых приёмов + бонусы − удержания − авансы ± ручные корректировки;
 - пересчёт открытого периода и immutable snapshot после закрытия периода;
 - реальные dashboard/reports агрегаты, средний чек, margin, загрузка по рабочему времени, выручка по специалистам и услугам;
-- RBAC для `OWNER`, `ADMINISTRATOR`, `SPECIALIST`, `ACCOUNTANT` и отказ в доступе неизвестным Telegram пользователям;
+- RBAC для `OWNER`, `ADMINISTRATOR`, `SPECIALIST`, `ACCOUNTANT` и `CLIENT`: новый Telegram пользователь автоматически получает только клиентский кабинет, а staff-доступ выдаётся отдельно;
 - AuditLog для критичных изменений и уведомительная архитектура Cloudflare Worker;
 - CSV-экспорт клиентов, записей, платежей, операций и зарплаты;
 - бонусы, отзывы, клиентский кабинет, лист ожидания, check-in и Telegram-напоминания из предыдущего этапа.
@@ -103,7 +103,7 @@ npm run deploy:notifications
 TELEGRAM_BOT_TOKEN="..." MINI_APP_URL="https://podologymk-crm.pages.dev" npm run configure:telegram
 ```
 
-`CRM_ALLOWED_TELEGRAM_IDS` ограничивает staff-доступ. Неизвестный Telegram ID не создаётся автоматически и получает отказ, пока владелец не пригласит его через настройки.
+`CRM_ALLOWED_TELEGRAM_IDS` ограничивает staff-доступ. Новый Telegram ID создаётся автоматически только с ролью `CLIENT`: он не видит сотрудников, финансы, настройки и другие CRM-разделы. Сотрудникам роль и доступ выдаются отдельно через настройки или allowlist.
 
 ## Environment variables
 
@@ -112,7 +112,7 @@ TELEGRAM_BOT_TOKEN="..." MINI_APP_URL="https://podologymk-crm.pages.dev" npm run
 - `DATABASE_URL` — только для Prisma/PostgreSQL migration и seed;
 - `SEED_OWNER_TELEGRAM_ID` — development seed;
 - `TELEGRAM_BOT_TOKEN` — Cloudflare encrypted secret;
-- `CRM_ALLOWED_TELEGRAM_IDS` — Cloudflare encrypted secret, CSV Telegram ID;
+- `CRM_ALLOWED_TELEGRAM_IDS` — Cloudflare encrypted secret, CSV Telegram ID сотрудников;
 - `TELEGRAM_WEBHOOK_SECRET` — Cloudflare encrypted secret.
 
 ## Tests and checks

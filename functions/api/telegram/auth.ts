@@ -34,11 +34,10 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (existing && existing.active !== 1) {
     return json({ ok: false, error: "Учётная запись деактивирована" }, 403);
   }
-  if (!existing && !isAllowedStaff) {
-    return json({ ok: false, error: "Пользователь не приглашён в CRM" }, 403);
-  }
   const userId = existing?.id ?? crypto.randomUUID();
-  const role = existing?.role ?? "OWNER";
+  // Unknown Telegram users are client-only accounts. Staff access is never
+  // granted automatically and still requires an explicit allowlist entry.
+  const role = existing?.role ?? (isAllowedStaff ? "OWNER" : "CLIENT");
 
   if (existing) {
     await env.DB.prepare(`
