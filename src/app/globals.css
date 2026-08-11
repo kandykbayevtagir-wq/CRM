@@ -40,6 +40,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+body.mobile-menu-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 button,
 select,
 input {
@@ -1469,6 +1474,14 @@ a {
   }
 
   .sidebar {
+    z-index: 50;
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 18px);
     transform: translateX(-105%);
     transition: transform 180ms ease;
   }
@@ -1494,11 +1507,13 @@ a {
 
   .mobile-overlay {
     position: fixed;
-    z-index: 15;
+    z-index: 40;
     inset: 0;
     display: block;
     background: rgba(35, 33, 48, 0.25);
     border: 0;
+    touch-action: none;
+    overscroll-behavior: none;
   }
 
   .main-column {
@@ -1661,6 +1676,7 @@ a {
 .data-state-action { margin-top: 5px; }
 .data-state-loading { min-height: 220px; flex-direction: row; color: var(--ink-soft); }
 .data-state-error .data-state-icon { color: #c55e6b; background: #ffeaed; }
+.auth-guard-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
 .spin { animation: spin 900ms linear infinite; }
 
 @keyframes spin { to { transform: rotate(360deg); } }

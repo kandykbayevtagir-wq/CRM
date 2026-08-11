@@ -22,6 +22,11 @@ describe("permissions and status transitions", () => {
     expect(hasPermission("SPECIALIST", "finance.write")).toBe(false);
   });
 
+  it("does not grant CRM permissions to clients or unknown roles", () => {
+    expect(hasPermission("CLIENT", "employees.read")).toBe(false);
+    expect(hasPermission("UNKNOWN", "employees.read")).toBe(false);
+  });
+
   it("does not reopen completed appointments", () => {
     expect(canTransitionAppointment("SCHEDULED", "CONFIRMED")).toBe(true);
     expect(canTransitionAppointment("IN_PROGRESS", "COMPLETED")).toBe(true);

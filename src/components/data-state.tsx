@@ -51,9 +51,9 @@ export function FormField({ label, children, className = "" }: { label: string; 
 }
 
 export function AuthHint() {
-  return <EmptyState title="Откройте podologymk в Telegram" description="CRM доступна только авторизованным сотрудникам через Telegram Mini App." />;
+  return <EmptyState title="Доступ не подтверждён" description="Откройте podologymk внутри Telegram. Доступ появится только для Telegram ID, привязанного к системе." />;
 }
 
 export function isAuthError(message: string | null) {
-  return Boolean(message && /авторизац/i.test(message));
+  return Boolean(message && /авторизац|telegram authorization|доступ/i.test(message));
 }

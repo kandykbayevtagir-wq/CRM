@@ -29,6 +29,7 @@ import { useApi } from "@/lib/use-api";
 import { apiFetch } from "@/lib/api-client";
 import type { AuthResponse, NotificationsResponse, SettingsResponse } from "@/lib/crm-types";
 import { ClientShell } from "@/components/client-shell";
+import { AuthHint, EmptyState, ErrorState, LoadingState, isAuthError } from "@/components/data-state";
 import { hasPermission, type Permission } from "@/lib/permissions";
 
 const primaryNavigation = [
@@ -53,19 +54,53 @@ function formatShellDate(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+function permissionForPath(pathname: string): Permission | null {
+  if (pathname === "/appointments" || pathname.startsWith("/appointments/")) return "appointments.read";
+  if (pathname === "/clients" || pathname.startsWith("/clients/")) return "clients.read";
+  if (pathname === "/employees" || pathname.startsWith("/employees/")) return "employees.read";
+  if (pathname === "/services" || pathname.startsWith("/services/")) return "services.read";
+  if (pathname === "/schedules" || pathname.startsWith("/schedules/")) return "schedules.read";
+  if (pathname === "/finance" || pathname.startsWith("/finance/")) return "finance.read";
+  if (pathname === "/payroll" || pathname.startsWith("/payroll/")) return "payroll.read";
+  if (pathname === "/reports" || pathname.startsWith("/reports/")) return "reports.read";
+  if (pathname === "/reviews" || pathname.startsWith("/reviews/")) return "reviews.read";
+  if (pathname === "/settings" || pathname.startsWith("/settings/")) return "settings.read";
+  return null;
+}
+
+function AccessDeniedState({ description = "У вашей роли нет доступа к этому разделу." }: { description?: string }) {
+  return <div className="auth-guard-screen"><EmptyState title="Раздел недоступен" description={description} /></div>;
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [selectedBranchId, setSelectedBranchId] = useState("");
-  const { data: auth } = useApi<AuthResponse>("/api/auth/me");
-  const { data: settings } = useApi<SettingsResponse>("/api/settings");
+  const { data: auth, loading: authLoading, error: authError, reload: reloadAuth } = useApi<AuthResponse>("/api/auth/me");
   const user = auth?.user;
+  const { data: settings } = useApi<SettingsResponse>("/api/settings", undefined, { enabled: Boolean(user && user.role !== "CLIENT") });
   const { data: notifications, loading: notificationsLoading, error: notificationsError, reload: reloadNotifications } = useApi<NotificationsResponse>("/api/notifications", undefined, { enabled: Boolean(user && user.role !== "CLIENT") });
   const [openPanel, setOpenPanel] = useState<"notifications" | "profile" | null>(null);
   const topbarActionsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setSelectedBranchId(window.localStorage.getItem("pmk_branch_id") ?? "");
   }, []);
+  useEffect(() => {
+    document.body.classList.toggle("mobile-menu-open", mobileOpen);
+
+    function preventPageSwipe(event: TouchEvent) {
+      if (!mobileOpen) return;
+      const target = event.target;
+      const sidebar = document.querySelector(".sidebar");
+      if (!(target instanceof Node) || !sidebar?.contains(target)) event.preventDefault();
+    }
+
+    document.addEventListener("touchmove", preventPageSwipe, { passive: false });
+    return () => {
+      document.body.classList.remove("mobile-menu-open");
+      document.removeEventListener("touchmove", preventPageSwipe);
+    };
+  }, [mobileOpen]);
   useEffect(() => {
     function closeOnOutside(event: MouseEvent) {
       if (topbarActionsRef.current && !topbarActionsRef.current.contains(event.target as Node)) setOpenPanel(null);
@@ -88,7 +123,19 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
-  if (user?.role === "CLIENT") return <ClientShell user={user}>{children}</ClientShell>;
+  if (authLoading && !user) return <LoadingState label="Проверяем доступ через Telegram…" />;
+  if (authError && isAuthError(authError)) return <AuthHint />;
+  if (authError && !user) return <ErrorState message={authError} onRetry={reloadAuth} />;
+  if (!user || user.active === 0) return <AuthHint />;
+
+  const isClientRoute = pathname === "/" || pathname.startsWith("/client/");
+  if (user.role === "CLIENT") {
+    if (!isClientRoute) return <ClientShell user={user}><AccessDeniedState description="Этот экран доступен только сотрудникам центра." /></ClientShell>;
+    return <ClientShell user={user}>{children}</ClientShell>;
+  }
+  if (pathname.startsWith("/client/")) return <AccessDeniedState description="Личный кабинет клиента недоступен для сотрудников." />;
+  const requiredPermission = permissionForPath(pathname);
+  if (requiredPermission && !hasPermission(user.role, requiredPermission)) return <AccessDeniedState />;
 
   return (
     <div className="app-shell">
