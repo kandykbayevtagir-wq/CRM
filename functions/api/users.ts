@@ -21,13 +21,22 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const telegramId = stringValue(body, "telegramId");
   const name = stringValue(body, "name");
   const role = stringValue(body, "role", "ADMINISTRATOR").toUpperCase();
+  const clientId = optionalString(body, "clientId");
   if (!telegramId || !name || !roles.has(role)) return badRequest("Telegram ID, имя и корректная роль обязательны");
   const duplicate = await env.DB.prepare("SELECT id FROM users WHERE telegram_id = ?").bind(telegramId).first();
   if (duplicate) return conflict("Пользователь с таким Telegram ID уже существует");
-  if (role === "CLIENT" && !optionalString(body, "clientId")) return badRequest("Для роли клиента укажите связанную карточку клиента");
+  if (role === "CLIENT" && !clientId) return badRequest("Для роли клиента укажите связанную карточку клиента");
+  if (role === "CLIENT") {
+    const client = await env.DB.prepare(`
+      SELECT c.id FROM clients c
+      WHERE c.id = ? AND c.is_active = 1
+        AND NOT EXISTS (SELECT 1 FROM users linked_user WHERE linked_user.client_id = c.id)
+    `).bind(clientId).first<{ id: string }>();
+    if (!client) return conflict("Карточка клиента не найдена или уже привязана к другому Telegram ID");
+  }
   const id = newId();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO users (id, telegram_id, name, username, telegram_username, avatar_url, role, client_id, phone, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)").bind(id, telegramId, name, optionalString(body, "username"), optionalString(body, "username"), optionalString(body, "avatarUrl"), role, optionalString(body, "clientId"), optionalString(body, "phone")),
+    env.DB.prepare("INSERT INTO users (id, telegram_id, name, username, telegram_username, avatar_url, role, client_id, phone, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)").bind(id, telegramId, name, optionalString(body, "username"), optionalString(body, "username"), optionalString(body, "avatarUrl"), role, clientId, optionalString(body, "phone")),
     auditStatement(env.DB, user, "user", id, "CREATE", null, { telegramId, name, role }),
   ]);
   return json({ ok: true, id }, 201);

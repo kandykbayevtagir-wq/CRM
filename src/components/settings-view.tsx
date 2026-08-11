@@ -6,11 +6,12 @@ import { BellRing, Building2, Cloud, LockKeyhole, Plus, SlidersHorizontal, UserP
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState, Modal } from "@/components/data-state";
 import { Button, PageHeader, SectionCard } from "@/components/ui";
-import type { SettingsResponse } from "@/lib/crm-types";
+import type { ClientRecord, SettingsResponse } from "@/lib/crm-types";
 import { useApi } from "@/lib/use-api";
 
-type UserRecord = { id: string; telegramId: string; username: string | null; name: string; role: string; active: number; lastLoginAt: string | null; createdAt: string };
+type UserRecord = { id: string; telegramId: string; username: string | null; name: string; role: string; active: number; clientId: string | null; lastLoginAt: string | null; createdAt: string };
 type UsersResponse = { ok: true; items: UserRecord[] };
+type ClientsResponse = { ok: true; items: ClientRecord[] };
 
 export function SettingsView() {
   const [brandName, setBrandName] = useState("");
@@ -24,11 +25,13 @@ export function SettingsView() {
   const [branchModalOpen, setBranchModalOpen] = useState(false);
   const [branchSaving, setBranchSaving] = useState(false);
   const [userModalOpen, setUserModalOpen] = useState(false);
+  const [inviteRole, setInviteRole] = useState("ADMINISTRATOR");
   const [userSaving, setUserSaving] = useState(false);
   const [userFormError, setUserFormError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const { data, loading, error, reload } = useApi<SettingsResponse>("/api/settings");
   const { data: usersData, reload: reloadUsers } = useApi<UsersResponse>("/api/users");
+  const { data: clientsData } = useApi<ClientsResponse>("/api/clients?status=active&pageSize=100");
 
   useEffect(() => {
     if (!data?.settings) return;
@@ -133,7 +136,7 @@ export function SettingsView() {
         <SectionCard title="Облачная синхронизация" subtitle="Единый источник данных для команды"><div className="cloud-status"><span className="cloud-status-dot" /><div><strong>Cloudflare D1 подключён</strong><span>Изменения доступны на всех устройствах после авторизации в Telegram.</span></div><Cloud size={20} color="#36ad7b" /></div><div className="settings-list cloud-details"><div className="settings-item"><div><strong>Резервная инфраструктура</strong><span>Cloudflare Pages + D1</span></div><span className="status-pill status-active">Работает</span></div><div className="settings-item"><div><strong>Журнал изменений</strong><span>Фиксирует операции сотрудников</span></div><span className="status-pill status-active">Включён</span></div></div></SectionCard>
 
         <SectionCard title="Роли и доступы" subtitle="Базовые роли для сотрудников CRM"><div className="settings-list"><div className="settings-item"><div><strong>Владелец</strong><span>Полный доступ к центру и настройкам</span></div><UsersRound size={18} color="#6f5be7" /></div><div className="settings-item"><div><strong>Администратор</strong><span>Записи, клиенты и оплаты</span></div><SlidersHorizontal size={18} color="#6f5be7" /></div><div className="settings-item"><div><strong>Специалист</strong><span>Свои записи и рабочие данные</span></div><LockKeyhole size={18} color="#6f5be7" /></div><div className="settings-item"><div><strong>Бухгалтер</strong><span>Финансы и отчёты</span></div><BellRing size={18} color="#6f5be7" /></div></div></SectionCard>
-        {usersData ? <SectionCard title="Пользователи CRM" subtitle="Доступ выдаётся только приглашённым Telegram ID" action={<Button variant="secondary" onClick={() => { setUserFormError(null); setUserModalOpen(true); }}><UserPlus size={14} /> Пригласить</Button>}>
+        {usersData ? <SectionCard title="Пользователи CRM" subtitle="Доступ выдаётся только приглашённым Telegram ID" action={<Button variant="secondary" onClick={() => { setUserFormError(null); setInviteRole("ADMINISTRATOR"); setUserModalOpen(true); }}><UserPlus size={14} /> Пригласить</Button>}>
           <div className="settings-list">{usersData.items.map((item) => <div className="settings-item user-settings-row" key={item.id}><div><strong>{item.name}</strong><span>Telegram ID: {item.telegramId}{item.username ? ` · @${item.username}` : ""}</span></div><div className="user-settings-actions"><select value={item.role} onChange={(event) => void updateUser(item.id, { role: event.target.value })} aria-label={`Роль ${item.name}`}><option value="OWNER">Владелец</option><option value="ADMINISTRATOR">Администратор</option><option value="SPECIALIST">Специалист</option><option value="ACCOUNTANT">Бухгалтер</option><option value="CLIENT">Клиент</option></select><button className={`status-pill ${item.active ? "status-active" : "status-inactive"}`} onClick={() => void updateUser(item.id, { active: !item.active })}>{item.active ? "Активен" : "Отключён"}</button></div></div>)}</div>
           {userFormError ? <p className="form-error">{userFormError}</p> : null}
         </SectionCard> : null}
@@ -148,7 +151,8 @@ export function SettingsView() {
           <FormField label="Telegram ID"><input name="telegramId" required inputMode="numeric" placeholder="Например, 123456789" /></FormField>
           <FormField label="Имя"><input name="name" required placeholder="Имя сотрудника" /></FormField>
           <FormField label="Username"><input name="username" placeholder="без @" /></FormField>
-          <FormField label="Роль"><select name="role" defaultValue="ADMINISTRATOR"><option value="ADMINISTRATOR">Администратор</option><option value="SPECIALIST">Специалист</option><option value="ACCOUNTANT">Бухгалтер</option><option value="OWNER">Владелец</option></select></FormField>
+          <FormField label="Роль"><select name="role" value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="ADMINISTRATOR">Администратор</option><option value="SPECIALIST">Специалист</option><option value="ACCOUNTANT">Бухгалтер</option><option value="OWNER">Владелец</option><option value="CLIENT">Клиент</option></select></FormField>
+          {inviteRole === "CLIENT" ? <FormField label="Карточка клиента" className="form-field-wide"><select name="clientId" required defaultValue=""><option value="" disabled>Выберите карточку клиента</option>{clientsData?.items.filter((client) => client.isActive !== 0).map((client) => <option key={client.id} value={client.id}>{client.fullName} · {client.phone}</option>)}</select><small className="field-hint">Клиент увидит только свой личный кабинет и свои записи.</small></FormField> : null}
           {userFormError ? <p className="form-error form-field-wide">{userFormError}</p> : null}
         </form>
       </Modal> : null}
