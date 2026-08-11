@@ -1,6 +1,6 @@
 # podologymk CRM
 
-`v0.4.0 — Operations & Reliability` — Telegram Mini App и веб-CRM для подологического центра podologymk.
+`v0.5.0 — Business OS` — Inventory, Intelligence, Retention & UX для Telegram Mini App и веб-CRM подологического центра podologymk.
 
 Система покрывает полный рабочий поток: клиент → запись → специалист и филиал → проведение приёма → фактическая оплата → ledger → зарплата → расходы → прибыль и отчёты.
 
@@ -56,6 +56,20 @@
 - 15-минутные reservation-блоки и D1 uniqueness защищают от параллельного бронирования пересекающихся услуг;
 - client booking поддерживает `idempotencyKey`, поэтому сетевой retry возвращает уже созданную запись;
 - новая migration `0007_operations_reliability.sql` добавляет service matrix, slot reservations и idempotency storage.
+
+## Business OS v0.5.0
+
+- склад с товарами, категориями, поставщиками, филиальными остатками, движениями и low-stock предупреждениями;
+- закупки с частичным получением, историей прихода и idempotent списанием в склад;
+- расходники услуг: при завершении приёма материалы списываются один раз и связываются с записью;
+- P&L с gross/net revenue, возвратами, себестоимостью, комиссиями, зарплатой, арендой, коммунальными и operating profit;
+- KPI специалистов, contribution margin, загрузка рабочего времени, retention и план/факт с прогнозом текущего темпа;
+- автоматические CRM-сегменты, follow-up после визита, кампании Telegram и outbox с retry/дедупликацией сообщений;
+- внутренние задачи, Notification Center, сверка payments/refunds/payroll/rent/utilities с ledger;
+- drill-down зарплаты до оплаченных приёмов и корректировок при сохранении immutable закрытого периода;
+- глобальный поиск `Ctrl/Cmd + K`, CSV-экспорт склада, движений, закупок, задач, KPI и P&L;
+- единый glass-поверхностный UI, адаптивные операционные экраны, loading/empty/error/success состояния и production health endpoint;
+- новая D1 migration `0008_business_os.sql`; Prisma schema синхронизирована с добавленными сущностями.
 
 ## Локальный запуск
 
@@ -157,5 +171,6 @@ npm run build:pages # production static export
 
 1. Production сейчас остаётся на существующем Cloudflare D1, чтобы не ломать работающий Pages deploy. Для полноценного PostgreSQL runtime нужен production `DATABASE_URL`/Hyperdrive и отдельный cutover с миграцией данных из D1.
 2. Уведомления пока используют существующий scheduled Worker без полноценной Queue/DLQ outbox-цепочки; это следующий reliability этап.
-3. Поддержка клиента пока открывает Telegram share с готовым текстом, а не внутренний SupportTicket inbox.
-4. Полная матрица услуг уже хранится и проверяется backend, но расширенное редактирование duration/price/commission overrides будет следующим UI-этапом.
+3. Cloudflare Queue/DLQ bindings не добавлены в текущий deploy: outbox уже работает через scheduled Worker, а Queue можно подключить без изменения доменной модели.
+4. Production runtime сохраняется на D1; Prisma/PostgreSQL остаётся канонической схемой для будущего controlled cutover через Hyperdrive/API.
+5. Массовые кампании ограничены Telegram и требуют настроенного `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` и cron Worker.

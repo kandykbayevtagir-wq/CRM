@@ -32,6 +32,8 @@ export function AppointmentsView() {
   const [checkInSaving, setCheckInSaving] = useState(false);
   const [paymentAppointment, setPaymentAppointment] = useState<AppointmentRecord | null>(null);
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [followUpAppointment, setFollowUpAppointment] = useState<AppointmentRecord | null>(null);
+  const [followUpDays, setFollowUpDays] = useState("30");
   const [calendarView, setCalendarView] = useState<"today" | "day" | "week">("today");
   const [selectedDate, setSelectedDate] = useState(dateInputValue(new Date()).slice(0, 10));
   const [branchFilter, setBranchFilter] = useState("");
@@ -80,10 +82,11 @@ export function AppointmentsView() {
     }
   }
 
-  async function completeAppointment(id: string) {
+  async function completeAppointment(id: string, recommendedDays: number | null) {
     setUpdatingId(id);
     try {
-      await apiFetch(`/api/appointments/${id}`, { method: "PATCH", body: { status: "COMPLETED" } });
+      await apiFetch(`/api/appointments/${id}`, { method: "PATCH", body: { status: "COMPLETED", ...(recommendedDays ? { followUpDays: recommendedDays } : {}) } });
+      setFollowUpAppointment(null);
       dispatchCrmEvent("crm:data-changed");
       await reload();
     } finally {
@@ -109,7 +112,7 @@ export function AppointmentsView() {
     setPaymentSaving(true);
     try {
       const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-      await apiFetch("/api/payments", { method: "POST", body: { ...values, appointmentId: paymentAppointment.id } });
+      await apiFetch("/api/payments", { method: "POST", body: { ...values, appointmentId: paymentAppointment.id, idempotencyKey: crypto.randomUUID() } });
       setPaymentAppointment(null);
       dispatchCrmEvent("crm:data-changed");
       await reload();
@@ -199,7 +202,7 @@ export function AppointmentsView() {
                     <td>{appointment.branchName ?? "Без филиала"}</td>
                     <td><StatusPill status={currentStatus} /></td>
                     <td><Amount value={Number(appointment.amount || 0)} /><span className="table-secondary">Оплачено {Number(appointment.paidAmount || 0).toLocaleString("ru-RU")} ₸</span></td>
-                    <td><div className="appointment-actions">{!["cancelled", "no_show"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus !== "completed" ? <button className="inline-action" onClick={() => void completeAppointment(appointment.id)} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
+                    <td><div className="appointment-actions">{!["cancelled", "no_show"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus !== "completed" ? <button className="inline-action" onClick={() => { setFollowUpDays("30"); setFollowUpAppointment(appointment); }} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
                   </tr>;
                 })}</tbody>
               </table>
@@ -220,9 +223,10 @@ export function AppointmentsView() {
           {formError ? <p className="form-error form-field-wide">{formError}</p> : null}
         </form>
       </Modal> : null}
-      {paymentAppointment ? <Modal title={`Оплата · ${paymentAppointment.clientName}`} onClose={() => setPaymentAppointment(null)} footer={<><Button variant="secondary" onClick={() => setPaymentAppointment(null)}>Отмена</Button><button className="button button-primary" type="submit" form="payment-form" disabled={paymentSaving}>{paymentSaving ? "Проводим…" : "Провести оплату"}</button></>}>
+      {paymentAppointment ? <Modal title={`Оплата · ${paymentAppointment.clientName}`} onClose={() => setPaymentAppointment(null)} footer={<><Button variant="secondary" onClick={() => setPaymentAppointment(null)}>Отмена</Button><button className="button button-primary" form="payment-form" type="submit" disabled={paymentSaving}>{paymentSaving ? "Проводим…" : "Провести оплату"}</button></>}>
         <form id="payment-form" className="form-grid" onSubmit={createPayment}><FormField label="Сумма, ₸"><input name="amount" type="number" min="1" step="0.01" required defaultValue={Math.max(0, Number(paymentAppointment.balance ?? Number(paymentAppointment.amount || 0) - Number(paymentAppointment.paidAmount || 0)))} /></FormField><FormField label="Способ оплаты"><select name="method" defaultValue="CASH"><option value="CASH">Наличные</option><option value="CARD">Карта</option><option value="TRANSFER">Перевод / Kaspi</option><option value="OTHER">Другое</option></select></FormField><FormField label="Комментарий" className="form-field-wide"><textarea name="note" rows={2} placeholder="Например, частичная оплата" /></FormField>{formError ? <p className="form-error form-field-wide">{formError}</p> : null}</form>
       </Modal> : null}
+      {followUpAppointment ? <Modal title={`Завершение · ${followUpAppointment.clientName}`} onClose={() => setFollowUpAppointment(null)} footer={<><Button variant="secondary" onClick={() => setFollowUpAppointment(null)}>Отмена</Button><Button onClick={() => void completeAppointment(followUpAppointment.id, followUpDays === "0" ? null : Number(followUpDays))}>Завершить приём</Button></>}><p className="modal-intro">Сразу сохраните рекомендованный интервал повторного визита. Его можно изменить позже в разделе Retention.</p><FormField label="Рекомендуемый повтор"><select value={followUpDays} onChange={(event) => setFollowUpDays(event.target.value)}><option value="0">Не создавать follow-up</option><option value="7">Через 7 дней</option><option value="14">Через 14 дней</option><option value="21">Через 21 день</option><option value="30">Через 30 дней</option><option value="45">Через 45 дней</option><option value="60">Через 60 дней</option><option value="90">Через 90 дней</option></select></FormField></Modal> : null}
       {checkInOpen ? <Modal title="Check-in клиента" onClose={() => setCheckInOpen(false)} footer={<Button variant="secondary" onClick={() => setCheckInOpen(false)}>Закрыть</Button>}>
         <form className="checkin-form" onSubmit={submitCheckIn}>
           <p className="modal-intro">Введите код из кабинета клиента или отсканируйте QR-код в Telegram. После проверки запись перейдёт в статус «Пришёл».</p>

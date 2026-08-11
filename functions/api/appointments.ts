@@ -155,6 +155,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const reminder24 = new Date(startMs - 24 * 60 * 60_000);
   const reminder2 = new Date(startMs - 2 * 60 * 60_000);
   if (clientId) {
+    statements.push(env.DB.prepare("UPDATE follow_ups SET status = 'BOOKED', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, clientId));
     for (const scheduledAt of [reminder24, reminder2]) {
       if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, 'APPOINTMENT_REMINDER', ?, ?)").bind(newId(), clientId, id, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id })));
     }

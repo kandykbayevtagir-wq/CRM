@@ -1,3 +1,44 @@
+# v0.5.0 — Business OS
+
+Дата: 2026-08-11
+
+## Добавлено
+
+- реальный склад: товары, категории, поставщики, остатки, филиальные локации, движения и low-stock alerts;
+- закупки DRAFT/ORDERED/PARTIALLY_RECEIVED/RECEIVED/CANCELLED с частичным получением и движениями прихода;
+- автоматическое idempotent списание расходников услуг после COMPLETED и журнал проблем недостатка остатков;
+- расчёт себестоимости и contribution margin, P&L с периодами, сравнением и филиальными/сервисными срезами;
+- KPI команды, загрузка по доступным рабочим минутам, retention, repeat booking, новые/возвратные клиенты и план/факт;
+- follow-up задачи после визита, системные сегменты клиентов и пользовательские сегменты;
+- Telegram message outbox, централизованные шаблоны, placeholders, retry и дедупликация campaign/automation сообщений;
+- campaigns, internal tasks и Notification Center с low-stock, overdue, unpaid, follow-up и системными событиями;
+- сверка payments/refunds/payroll/rent/utilities с financial ledger;
+- payroll drill-down до платежей и корректировок без изменения закрытых snapshot-периодов;
+- глобальный поиск с `Ctrl/Cmd + K`, новые CSV export-типы и `/api/health`;
+- бизнес-дизайн поверхностей и mobile/Telegram polish для новых рабочих разделов;
+- migration `0008_business_os.sql`, Prisma models и тесты для новых Decimal-расчётов.
+
+## API и backend
+
+- `/api/inventory`, `/api/inventory/movements`, `/api/inventory/consumables`, `/api/inventory/issues`;
+- `/api/purchases`, `/api/purchases/:id/receive`;
+- `/api/pnl`, `/api/kpi`, `/api/goals`, `/api/retention`, `/api/follow-ups`;
+- `/api/campaigns`, `/api/campaigns/:id/send`, `/api/tasks`, `/api/notifications`;
+- `/api/reconciliation`, `/api/search`, `/api/health`;
+- scheduled notification Worker обрабатывает outbox и повторные отправки с backoff.
+
+## Ограничения
+
+- runtime production по-прежнему Cloudflare D1; PostgreSQL/Prisma migration подготовлены, но cutover не выполняется без отдельной production-конфигурации;
+- Cloudflare Queues/DLQ не включены, поэтому текущий retry работает через cron Worker и таблицу outbox.
+
+## Проверки
+
+- `npm run typecheck`
+- `npm run lint`
+- `npm run test`
+- `npm run build:pages`
+
 # v0.4.0 — Operations & Reliability
 
 Дата: 2026-08-11

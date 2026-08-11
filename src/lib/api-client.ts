@@ -28,7 +28,7 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   headers.set("accept", "application/json");
   let requestPath = path;
   if (typeof window !== "undefined" && (init.method ?? "GET").toUpperCase() === "GET" && path.startsWith("/api/") && window.localStorage.getItem("pmk_branch_id")) {
-    const branchAware = ["/api/dashboard", "/api/appointments", "/api/finance", "/api/reports", "/api/payments", "/api/rent", "/api/utilities"];
+      const branchAware = ["/api/dashboard", "/api/appointments", "/api/finance", "/api/reports", "/api/pnl", "/api/kpi", "/api/goals", "/api/inventory", "/api/purchases", "/api/tasks", "/api/payments", "/api/rent", "/api/utilities"];
     if (branchAware.some((prefix) => path.startsWith(prefix))) {
       const url = new URL(path, window.location.origin);
       if (!url.searchParams.has("branchId")) url.searchParams.set("branchId", window.localStorage.getItem("pmk_branch_id") ?? "");

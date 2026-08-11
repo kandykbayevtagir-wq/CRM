@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useDeferredValue, useMemo, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, Download, Landmark, Plus, ReceiptText, Search, Trash2, Zap } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2, Download, Landmark, Plus, ReceiptText, Search, Trash2, Zap } from "lucide-react";
 
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState, Modal } from "@/components/data-state";
@@ -16,6 +16,8 @@ type RentRecord = { id: string; branchId: string; branchName: string | null; per
 type UtilityRecord = { id: string; branchId: string; branchName: string | null; kind: string; periodStart: string; previousMeterValue: number; currentMeterValue: number; consumption: number; tariff: number; fixedFee: number; amount: number; dueDate: string; status: string; paidAt: string | null; note: string | null };
 type RentResponse = { ok: true; items: RentRecord[] };
 type UtilityResponse = { ok: true; items: UtilityRecord[] };
+type ReconciliationCheck = { key: string; label: string; sourceAmount: number; ledgerAmount: number; difference: number; sourceCount: number; ledgerCount: number; ok: boolean };
+type ReconciliationResponse = { ok: true; healthy: boolean; checks: ReconciliationCheck[]; checkedAt: string };
 
 function statusKey(status: string) {
   return status.toLowerCase();
@@ -34,6 +36,7 @@ export function FinanceView() {
   const { data: branches } = useApi<BranchResponse>("/api/branches");
   const { data: rentData, reload: reloadRent } = useApi<RentResponse>("/api/rent");
   const { data: utilityData, reload: reloadUtilities } = useApi<UtilityResponse>("/api/utilities");
+  const { data: reconciliation, reload: reloadReconciliation } = useApi<ReconciliationResponse>("/api/reconciliation");
   const [rentModalOpen, setRentModalOpen] = useState(false);
   const [utilityModalOpen, setUtilityModalOpen] = useState(false);
   const items = data?.items ?? [];
@@ -48,7 +51,7 @@ export function FinanceView() {
   const combinedError = error ?? dashboardError;
 
   async function reloadAll() {
-    await Promise.all([reload(), reloadDashboard(), reloadRent(), reloadUtilities()]);
+    await Promise.all([reload(), reloadDashboard(), reloadRent(), reloadUtilities(), reloadReconciliation()]);
   }
 
   async function createExpense(event: FormEvent<HTMLFormElement>) {
@@ -158,6 +161,11 @@ export function FinanceView() {
             <div className="summary-list cloud-details"><div className="summary-row"><span className="summary-row-copy">Текущий месяц</span><strong>{new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date())}</strong></div><div className="summary-row"><span className="summary-row-copy">Зарплаты учтены</span><strong>{formatCurrency(metrics?.payroll ?? 0)}</strong></div></div>
           </SectionCard>
         </div>
+
+        <SectionCard title="Контроль целостности" subtitle="Сверка источников и финансового журнала" action={<Button variant="ghost" onClick={() => void reloadReconciliation()}>Проверить ещё раз</Button>}>
+          <div className="reconciliation-grid">{(reconciliation?.checks ?? []).map((item) => <div className={`reconciliation-item ${item.ok ? "reconciliation-ok" : "reconciliation-warning"}`} key={item.key}><span className="reconciliation-icon">{item.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}</span><div><strong>{item.label}</strong><span>{item.ok ? `${item.sourceCount} операций совпадают` : `Разница ${formatCurrency(item.difference)} · источник ${item.sourceCount}, журнал ${item.ledgerCount}`}</span></div></div>)}</div>
+          {!reconciliation ? <p className="section-card-note">Проверка пока выполняется.</p> : null}
+        </SectionCard>
       </> : null}
 
       {modalOpen ? <Modal title="Добавить расход" onClose={() => setModalOpen(false)} footer={<><Button variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button><button className="button button-primary" type="submit" form="expense-form" disabled={saving}>{saving ? "Сохраняем…" : "Сохранить операцию"}</button></>}>

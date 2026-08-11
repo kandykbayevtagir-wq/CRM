@@ -5,6 +5,7 @@ import { newId } from "./http";
 
 type EmployeeRow = { id: string; fullName: string; fixedSalary: number; revenuePercent: number };
 type AdjustmentRow = { employeeId: string; kind: string; amount: number; reason: string };
+type PaymentDetailRow = { paymentId: string; appointmentId: string; paidAt: string; clientName: string; amount: number; refundedAmount: number };
 
 export async function calculatePayrollPeriod(db: D1Database, periodId: string, actor: AuthUser) {
   const period = await db.prepare("SELECT id, period_start AS periodStart, period_end AS periodEnd, status, closed_at AS closedAt FROM payroll_periods WHERE id = ?").bind(periodId).first<{ id: string; periodStart: string; periodEnd: string; status: string; closedAt: string | null }>();
@@ -27,13 +28,30 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
       WHERE a.employee_id = ? AND a.status = 'COMPLETED' AND p.payment_status = 'POSTED'
         AND p.paid_at >= ? AND p.paid_at < ?
     `).bind(employee.id, period.periodStart, period.periodEnd, employee.id, period.periodStart, period.periodEnd).first<{ value: number }>();
+    const paymentDetails = await db.prepare(`
+      SELECT p.id AS paymentId, p.appointment_id AS appointmentId, p.paid_at AS paidAt,
+        c.full_name AS clientName, p.amount,
+        COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa WHERE pa.payment_id = p.id), 0) AS refundedAmount
+      FROM payments p
+      INNER JOIN appointments a ON a.id = p.appointment_id
+      INNER JOIN clients c ON c.id = a.client_id
+      WHERE a.employee_id = ? AND a.status = 'COMPLETED' AND p.payment_status = 'POSTED'
+        AND p.paid_at >= ? AND p.paid_at < ?
+      ORDER BY p.paid_at ASC
+    `).bind(employee.id, period.periodStart, period.periodEnd).all<PaymentDetailRow>();
     const employeeAdjustments = adjustmentRows.filter((row) => row.employeeId === employee.id);
     const bonusAmount = employeeAdjustments.filter((row) => row.kind === "BONUS").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
     const deductionAmount = employeeAdjustments.filter((row) => row.kind === "DEDUCTION").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
     const advanceAmount = employeeAdjustments.filter((row) => row.kind === "ADVANCE").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
     const manualAdjustmentAmount = employeeAdjustments.filter((row) => row.kind === "MANUAL").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
     const calculation = calculatePayroll({ fixedAmount: employee.fixedSalary, revenueBase: revenue?.value ?? 0, revenuePercent: employee.revenuePercent, bonusAmount, deductionAmount, advanceAmount, manualAdjustmentAmount });
-    lines.push({ employee, calculation, details: { adjustments: employeeAdjustments, source: "POSTED_PAYMENTS_OF_COMPLETED_APPOINTMENTS", periodStart: period.periodStart, periodEnd: period.periodEnd } });
+    lines.push({ employee, calculation, details: {
+      adjustments: employeeAdjustments,
+      payments: paymentDetails.results ?? [],
+      source: "POSTED_PAYMENTS_OF_COMPLETED_APPOINTMENTS",
+      periodStart: period.periodStart,
+      periodEnd: period.periodEnd,
+    } });
   }
   const total = lines.reduce((sum, line) => sum + Number(line.calculation.totalAmount), 0);
   const statements: D1PreparedStatement[] = [];

@@ -106,6 +106,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(id),
     ...reservationStatements(env.DB, id, employeeId, startsAt, slot.endsAt),
   ];
+  if (user.clientId) reservationChanges.push(env.DB.prepare("UPDATE follow_ups SET status = 'BOOKED', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, user.clientId));
   const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
     .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {

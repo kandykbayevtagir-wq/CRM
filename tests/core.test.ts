@@ -4,6 +4,7 @@ import { rangesOverlap } from "../src/lib/appointments/conflicts";
 import { calculateLedgerTotals } from "../src/lib/finance/ledger";
 import { remainingPaymentBalance } from "../src/lib/finance/payments";
 import { calculateOccupancy, calculatePayroll } from "../src/lib/finance/payroll";
+import { calculateContributionMargin, calculateOperatingProfit, calculatePlanCompletion, calculateStockBalance } from "../src/lib/finance/business";
 import { hasPermission } from "../src/lib/permissions";
 import { formatKzPhone, isValidPhone, normalizePhone, toKzE164 } from "../src/lib/validation/phone";
 import { reservationStarts } from "../src/lib/appointments/reservations";
@@ -107,5 +108,24 @@ describe("financial ledger", () => {
       { direction: "INCOME", kind: "REFUND", amount: 5000 },
       { direction: "EXPENSE", kind: "EXPENSE", amount: 10000 },
     ])).toMatchObject({ grossIncome: 30000, refunds: 5000, netIncome: 25000, operatingProfit: 15000 });
+  });
+});
+
+describe("business OS calculations", () => {
+  it("calculates contribution margin from net collected revenue", () => {
+    expect(calculateContributionMargin({ revenue: "100000", refunds: "5000", consumables: "12000", commission: "25000" })).toBe("58000.00");
+  });
+
+  it("calculates operating profit without floating point drift", () => {
+    expect(calculateOperatingProfit({ netRevenue: "100000.10", payroll: "30000.05", rent: "10000", utilities: "1234.56", consumables: "456.78", otherExpenses: "789.11" })).toBe("57519.60");
+  });
+
+  it("calculates stock balance only from movements", () => {
+    expect(calculateStockBalance([{ direction: "IN", quantity: "10.5" }, { direction: "OUT", quantity: 2 }, { direction: "IN", quantity: 1.25 }])).toBe("9.750");
+  });
+
+  it("caps plan completion at 100 percent", () => {
+    expect(calculatePlanCompletion(100000, 125000)).toBe(100);
+    expect(calculatePlanCompletion(0, 125000)).toBe(0);
   });
 });

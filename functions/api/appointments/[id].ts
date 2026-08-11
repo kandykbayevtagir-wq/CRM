@@ -1,6 +1,7 @@
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
+import { prepareAppointmentConsumption } from "../../_lib/inventory";
 import { awardLoyaltyPoints } from "../../_lib/loyalty";
 import { reservationStatements } from "../../_lib/booking";
 import { badRequest, conflict, dateValue, json, newId, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
@@ -65,6 +66,17 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     auditStatement(env.DB, user, "appointment", appointmentId, "UPDATE", { status: previousStatus, startsAt: existing.starts_at, endsAt: existing.ends_at }, { status: requestedStatus, startsAt: incomingDate, endsAt: incomingEnds, cancelReason }),
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(appointmentId),
   ];
+  const inventory = requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED"
+    ? await prepareAppointmentConsumption(env.DB, appointmentId)
+    : { statements: [] as D1PreparedStatement[], warnings: [] };
+  statements.push(...inventory.statements);
+  const followUpDaysValue = typeof body.followUpDays === "number" ? body.followUpDays : Number(body.followUpDays);
+  const followUpDate = dateValue(body, "followUpDate");
+  if (requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED" && ((Number.isFinite(followUpDaysValue) && followUpDaysValue > 0) || followUpDate)) {
+    const recommendedDate = followUpDate || new Date(Date.now() + followUpDaysValue * 86_400_000).toISOString();
+    statements.push(env.DB.prepare("UPDATE follow_ups SET status = 'DONE', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, String(existing.client_id ?? "")));
+    statements.push(env.DB.prepare("INSERT INTO follow_ups (id, client_id, appointment_id, recommended_date, interval_days, assigned_to, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(newId(), String(existing.client_id ?? ""), appointmentId, recommendedDate, Number.isFinite(followUpDaysValue) && followUpDaysValue > 0 ? followUpDaysValue : null, user.id, user.id));
+  }
   if (!['CANCELLED', 'NO_SHOW'].includes(requestedStatus)) statements.push(...reservationStatements(env.DB, appointmentId, employeeId, incomingDate, incomingEnds));
   try {
     await env.DB.batch(statements);
@@ -78,5 +90,5 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     if (appointment?.clientId) await awardLoyaltyPoints(env.DB, appointmentId, appointment.clientId, Number(appointment.totalAmount || 0));
   }
   if (requestedStatus === "CANCELLED" || requestedStatus === "NO_SHOW") await env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(appointmentId).run();
-  return json({ ok: true });
+  return json({ ok: true, inventoryWarnings: inventory.warnings });
 };

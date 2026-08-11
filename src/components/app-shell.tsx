@@ -10,17 +10,23 @@ import {
   BriefcaseBusiness,
   CalendarDays,
   CalendarClock,
+  BarChart3,
   ChevronDown,
   CircleHelp,
   ClipboardList,
   FileBarChart,
   LayoutDashboard,
+  ListTodo,
+  Megaphone,
   Menu,
+  Package,
   RefreshCw,
   Settings,
+  ShoppingCart,
   ShieldCheck,
   Star,
   UsersRound,
+  Target,
   WalletCards,
   X,
 } from "lucide-react";
@@ -29,6 +35,7 @@ import { useApi } from "@/lib/use-api";
 import { apiFetch } from "@/lib/api-client";
 import type { AuthResponse, NotificationsResponse, SettingsResponse } from "@/lib/crm-types";
 import { ClientShell } from "@/components/client-shell";
+import { GlobalSearch } from "@/components/global-search";
 import { AuthHint, EmptyState, ErrorState, LoadingState, isAuthError } from "@/components/data-state";
 import { hasPermission, type Permission } from "@/lib/permissions";
 
@@ -37,6 +44,7 @@ const primaryNavigation = [
   { href: "/appointments", label: "Записи", icon: CalendarDays, permission: "appointments.read" as Permission },
   { href: "/clients", label: "Клиенты", icon: UsersRound, permission: "clients.read" as Permission },
   { href: "/employees", label: "Сотрудники", icon: ClipboardList, permission: "employees.read" as Permission },
+  { href: "/tasks", label: "Задачи", icon: ListTodo, permission: "tasks.read" as Permission },
 ];
 
 const financeNavigation = [
@@ -46,6 +54,14 @@ const financeNavigation = [
   { href: "/finance", label: "Финансы", icon: WalletCards, permission: "finance.read" as Permission },
   { href: "/payroll", label: "Зарплата", icon: Banknote, permission: "payroll.read" as Permission },
   { href: "/reports", label: "Отчёты", icon: FileBarChart, permission: "reports.read" as Permission },
+  { href: "/pnl", label: "P&L", icon: BarChart3, permission: "pnl.read" as Permission },
+  { href: "/kpi", label: "KPI команды", icon: Target, permission: "kpi.read" as Permission },
+  { href: "/goals", label: "План / факт", icon: Target, permission: "goals.read" as Permission },
+  { href: "/inventory", label: "Склад", icon: Package, permission: "inventory.read" as Permission },
+  { href: "/purchases", label: "Закупки", icon: ShoppingCart, permission: "purchases.read" as Permission },
+  { href: "/suppliers", label: "Поставщики", icon: ShoppingCart, permission: "inventory.read" as Permission },
+  { href: "/retention", label: "Retention", icon: UsersRound, permission: "retention.read" as Permission },
+  { href: "/campaigns", label: "Кампании", icon: Megaphone, permission: "campaigns.read" as Permission },
 ];
 
 function formatShellDate(value: string | null | undefined) {
@@ -63,6 +79,15 @@ function permissionForPath(pathname: string): Permission | null {
   if (pathname === "/finance" || pathname.startsWith("/finance/")) return "finance.read";
   if (pathname === "/payroll" || pathname.startsWith("/payroll/")) return "payroll.read";
   if (pathname === "/reports" || pathname.startsWith("/reports/")) return "reports.read";
+  if (pathname === "/pnl" || pathname.startsWith("/pnl/")) return "pnl.read";
+  if (pathname === "/kpi" || pathname.startsWith("/kpi/")) return "kpi.read";
+  if (pathname === "/goals" || pathname.startsWith("/goals/")) return "goals.read";
+  if (pathname === "/inventory" || pathname.startsWith("/inventory/")) return "inventory.read";
+  if (pathname === "/purchases" || pathname.startsWith("/purchases/")) return "purchases.read";
+  if (pathname === "/suppliers" || pathname.startsWith("/suppliers/")) return "inventory.read";
+  if (pathname === "/retention" || pathname.startsWith("/retention/")) return "retention.read";
+  if (pathname === "/campaigns" || pathname.startsWith("/campaigns/")) return "campaigns.read";
+  if (pathname === "/tasks" || pathname.startsWith("/tasks/")) return "tasks.read";
   if (pathname === "/reviews" || pathname.startsWith("/reviews/")) return "reviews.read";
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return "settings.read";
   return null;
@@ -112,7 +137,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const visibleFinance = user ? financeNavigation.filter((item) => hasPermission(user.role, item.permission)) : financeNavigation;
   const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
-  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/settings": "Настройки" };
+  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/tasks": "Задачи", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/pnl": "P&L", "/kpi": "KPI команды", "/goals": "План / факт", "/inventory": "Склад", "/purchases": "Закупки", "/suppliers": "Поставщики", "/retention": "Retention", "/campaigns": "Кампании", "/settings": "Настройки" };
   const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
 
   async function logout() {
@@ -215,6 +240,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="main-column">
         <header className="topbar">
           <div className="topbar-breadcrumb"><span>podologymk</span><span>/</span><strong>{pageLabel}</strong></div>
+          <GlobalSearch />
           <div className="topbar-actions" ref={topbarActionsRef}>
             <button className={`icon-button notification-button ${openPanel === "notifications" ? "topbar-control-active" : ""}`} aria-label="Уведомления" aria-expanded={openPanel === "notifications"} onClick={() => { setOpenPanel(openPanel === "notifications" ? null : "notifications"); if (openPanel !== "notifications") void reloadNotifications(); }}>
               <Bell size={19} strokeWidth={1.8} />
