@@ -6,6 +6,8 @@ import { remainingPaymentBalance } from "../src/lib/finance/payments";
 import { calculateOccupancy, calculatePayroll } from "../src/lib/finance/payroll";
 import { hasPermission } from "../src/lib/permissions";
 import { formatKzPhone, isValidPhone, normalizePhone, toKzE164 } from "../src/lib/validation/phone";
+import { reservationStarts } from "../src/lib/appointments/reservations";
+import { isStaffTelegramAllowed, resolveTelegramRole } from "../src/lib/auth/bootstrap";
 
 describe("phone normalization", () => {
   it("normalizes Kazakhstan formats consistently", () => {
@@ -33,6 +35,13 @@ describe("phone normalization", () => {
 });
 
 describe("permissions and status transitions", () => {
+  it("never bootstraps an allowlisted unknown user as staff", () => {
+    expect(resolveTelegramRole(undefined, "123", "999")).toBe("CLIENT");
+    expect(resolveTelegramRole(undefined, "999", "999")).toBe("OWNER");
+    expect(isStaffTelegramAllowed("OWNER", "123", ["123"], "999")).toBe(true);
+    expect(isStaffTelegramAllowed("OWNER", "456", ["123"], "999")).toBe(false);
+  });
+
   it("keeps finance restricted to accounting roles", () => {
     expect(hasPermission("OWNER", "finance.write")).toBe(true);
     expect(hasPermission("ACCOUNTANT", "payroll.write")).toBe(true);
@@ -54,6 +63,17 @@ describe("permissions and status transitions", () => {
   it("detects overlapping appointment intervals", () => {
     expect(rangesOverlap("2026-08-10T10:00:00Z", "2026-08-10T11:30:00Z", "2026-08-10T11:00:00Z", "2026-08-10T12:00:00Z")).toBe(true);
     expect(rangesOverlap("2026-08-10T10:00:00Z", "2026-08-10T11:00:00Z", "2026-08-10T11:00:00Z", "2026-08-10T12:00:00Z")).toBe(false);
+  });
+});
+
+describe("booking integrity", () => {
+  it("reserves every 15-minute bucket touched by a service", () => {
+    expect(reservationStarts("2026-08-10T09:05:00.000Z", "2026-08-10T10:00:00.000Z")).toEqual([
+      "2026-08-10T09:00:00.000Z",
+      "2026-08-10T09:15:00.000Z",
+      "2026-08-10T09:30:00.000Z",
+      "2026-08-10T09:45:00.000Z",
+    ]);
   });
 });
 

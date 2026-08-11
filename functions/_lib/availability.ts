@@ -1,3 +1,5 @@
+import { reservationStarts } from "../../src/lib/appointments/reservations";
+
 export type AvailabilitySlot = {
   startsAt: string;
   endsAt: string;
@@ -70,12 +72,17 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   const employeeQuery = `
     SELECT e.id, e.full_name AS fullName, b.name AS branchName
     FROM employees e INNER JOIN employee_branches eb ON eb.employee_id = e.id INNER JOIN branches b ON b.id = eb.branch_id
-    WHERE e.is_active = 1 AND eb.branch_id = ? ${params.employeeId ? "AND e.id = ?" : ""}
+    WHERE e.is_active = 1 AND eb.branch_id = ?
+      AND EXISTS (
+        SELECT 1 FROM employee_services es
+        WHERE es.employee_id = e.id AND es.service_id = ? AND es.active = 1
+          AND (es.branch_id IS NULL OR es.branch_id = ?)
+      ) ${params.employeeId ? "AND e.id = ?" : ""}
     ORDER BY e.full_name ASC
   `;
   const employees = params.employeeId
-    ? await db.prepare(employeeQuery).bind(params.branchId, params.employeeId).all<{ id: string; fullName: string; branchName: string }>()
-    : await db.prepare(employeeQuery).bind(params.branchId).all<{ id: string; fullName: string; branchName: string }>();
+    ? await db.prepare(employeeQuery).bind(params.branchId, params.serviceId, params.branchId, params.employeeId).all<{ id: string; fullName: string; branchName: string }>()
+    : await db.prepare(employeeQuery).bind(params.branchId, params.serviceId, params.branchId).all<{ id: string; fullName: string; branchName: string }>();
   if (!employees.results?.length) return [];
 
   const timezone = String(settings?.timezone ?? "Asia/Almaty");
@@ -83,7 +90,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   const dateEnd = new Date(`${params.date}T23:59:59.999${timezoneOffset(params.date, timezone)}`).toISOString();
   const employeeIds = employees.results.map((employee) => employee.id);
   const placeholders = employeeIds.map(() => "?").join(",");
-  const [appointments, timeOff, schedules, closures] = await Promise.all([
+  const [appointments, timeOff, schedules, closures, reservations] = await Promise.all([
     db.prepare(`
       SELECT a.id, a.employee_id AS employeeId, a.starts_at AS startsAt, a.ends_at AS endsAt,
         COALESCE(SUM(s.duration_minutes * aps.quantity), 60) AS durationMinutes
@@ -97,6 +104,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
     db.prepare(`SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE employee_id IN (${placeholders}) AND starts_at < ? AND ends_at > ?`).bind(...employeeIds, dateEnd, dateStart).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
     db.prepare("SELECT branch_id AS branchId, starts_at AS startsAt, ends_at AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND starts_at < ? AND ends_at > ?").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
+    db.prepare(`SELECT employee_id AS employeeId, slot_start AS slotStart FROM appointment_slot_reservations WHERE employee_id IN (${placeholders}) AND slot_start >= ? AND slot_start < ? ${params.excludeAppointmentId ? "AND appointment_id <> ?" : ""}`).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ employeeId: string; slotStart: string }>(),
   ]);
 
   const schedulesByEmployee = new Map<string, TimeRange>();
@@ -113,14 +121,20 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
     rows.push(item);
     timeOffByEmployee.set(item.employeeId, rows);
   }
+  const reservationsByEmployee = new Map<string, Set<string>>();
+  for (const reservation of reservations.results ?? []) {
+    const rows = reservationsByEmployee.get(reservation.employeeId) ?? new Set<string>();
+    rows.add(reservation.slotStart);
+    reservationsByEmployee.set(reservation.employeeId, rows);
+  }
   const now = Date.now();
   const slots: AvailabilitySlot[] = [];
-  const defaultRange: TimeRange = { startsTime: String(settings?.startTime ?? "09:00"), endsTime: String(settings?.endTime ?? "18:00"), breakStartTime: null, breakEndTime: null };
   const interval = Math.max(15, Number(settings?.slotInterval ?? 30));
   const duration = Math.max(15, Number(service.durationMinutes ?? 60));
 
   for (const employee of employees.results ?? []) {
-    const range = schedulesByEmployee.get(employee.id) ?? defaultRange;
+    const range = schedulesByEmployee.get(employee.id);
+    if (!range) continue;
     const start = timeToMinutes(range.startsTime);
     const end = timeToMinutes(range.endsTime);
     const employeeAppointments = appointmentsByEmployee.get(employee.id) ?? [];
@@ -143,6 +157,8 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
         const existingEnd = appointment.endsAt ? new Date(appointment.endsAt).getTime() : existingStart + Number(appointment.durationMinutes || 60) * 60_000;
         return existingStart < endMs && existingEnd > startMs;
       })) continue;
+      const employeeReservations = reservationsByEmployee.get(employee.id);
+      if (employeeReservations && reservationStarts(startsAt, endsAt).some((slotStart) => employeeReservations.has(slotStart))) continue;
       slots.push({ startsAt, endsAt, employeeId: employee.id, employeeName: employee.fullName, branchId: params.branchId, branchName: employee.branchName, serviceId: service.id, price: Number(service.price || 0) });
     }
   }

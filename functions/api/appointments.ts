@@ -5,6 +5,7 @@ import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_l
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, conflict, dateValue, json, newCheckInToken, newId, optionalString, readJson, stringValue } from "../_lib/http";
 import { isAppointmentStatus } from "../../src/lib/appointments/transitions";
+import { reservationStatements } from "../_lib/booking";
 import { normalizePhone } from "../../src/lib/validation/phone";
 
 const sources = new Set(["ADMIN", "TELEGRAM", "PHONE", "WEBSITE", "REFERRAL", "OTHER"]);
@@ -116,6 +117,13 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const serviceResult = await env.DB.prepare(`SELECT id, name, price, duration_minutes AS durationMinutes FROM services WHERE id IN (${placeholders}) AND is_active = 1`).bind(...serviceIds).all<{ id: string; name: string; price: number; durationMinutes: number }>();
   const services = serviceResult.results ?? [];
   if (services.length !== serviceIds.length) return badRequest("Одна из услуг не найдена или архивирована");
+  const eligibility = await env.DB.prepare(`
+    SELECT COUNT(DISTINCT es.service_id) AS count
+    FROM employee_services es
+    WHERE es.employee_id = ? AND es.active = 1 AND es.service_id IN (${serviceIds.map(() => "?").join(",")})
+      AND (es.branch_id IS NULL OR es.branch_id = ?)
+  `).bind(employeeId, ...serviceIds, branchId).first<{ count: number }>();
+  if (Number(eligibility?.count ?? 0) !== serviceIds.length) return badRequest("Специалист не оказывает одну из услуг в выбранном филиале");
   const total = services.reduce((sum, service) => sum.plus(new Decimal(service.price ?? 0)), new Decimal(0));
   const duration = services.reduce((sum, service) => sum + Math.max(15, Number(service.durationMinutes ?? 60)), 0);
   const startMs = new Date(startsAt).getTime();
@@ -139,6 +147,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   for (const service of services) {
     statements.push(env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, service.id, Number(new Decimal(service.price ?? 0).toFixed(2)), service.durationMinutes));
   }
+  statements.push(...reservationStatements(env.DB, id, employeeId, startsAt, endsAt));
   statements.push(
     env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, NULL, ?, ?, ?)").bind(newId(), id, status, user.id, "Запись создана"),
     auditStatement(env.DB, user, "appointment", id, "CREATE", null, { clientId, employeeId, branchId, startsAt, endsAt, status, totalAmount: total.toFixed(2) }),
@@ -150,6 +159,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
       if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, 'APPOINTMENT_REMINDER', ?, ?)").bind(newId(), clientId, id, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id })));
     }
   }
-  await env.DB.batch(statements);
+  try {
+    await env.DB.batch(statements);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "";
+    if (/unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
+    return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);
+  }
   return json({ ok: true, id, startsAt, endsAt, totalAmount: total.toFixed(2) }, 201);
 };

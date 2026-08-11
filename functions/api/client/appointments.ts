@@ -1,7 +1,8 @@
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
 import { findAvailableSlots } from "../../_lib/availability";
+import { reservationStatements } from "../../_lib/booking";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
+import { badRequest, conflict, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
 import { sendTelegramMessage } from "../../_lib/telegram-bot";
 
 function appointmentMessage(clientName: string, startsAt: string, serviceName: string, branchName: string, changed = false) {
@@ -45,7 +46,16 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const branchId = stringValue(body, "branchId");
   const employeeId = stringValue(body, "employeeId");
   const appointmentId = stringValue(body, "appointmentId");
+  const idempotencyKey = stringValue(body, "idempotencyKey");
   if (!startsAt || !serviceId || !branchId || !employeeId) return badRequest("Выберите услугу, филиал, специалиста и время");
+  if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
+  const requestHash = [appointmentId, startsAt, serviceId, branchId, employeeId].join("|");
+  if (idempotencyKey) {
+    const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
+      .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();
+    if (previous && previous.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой записи");
+    if (previous) return json({ ok: true, id: previous.appointmentId, changed: previous.changed === 1, replayed: true });
+  }
   if (new Date(startsAt).getTime() <= Date.now()) return badRequest("Нельзя записаться на прошедшее время");
 
   const existing = appointmentId
@@ -92,11 +102,23 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
     ...reminderTimes.map((reminder) => env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(newId(), user.id, user.clientId, id, reminder.kind, reminder.time.toISOString(), JSON.stringify({ startsAt }))),
   ];
+  const reservationChanges: D1PreparedStatement[] = [
+    env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(id),
+    ...reservationStatements(env.DB, id, employeeId, startsAt, slot.endsAt),
+  ];
+  const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
+    .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {
-    await env.DB.batch([...appointmentStatements, ...notificationStatements]);
+    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement]);
   } catch (cause) {
     const databaseMessage = cause instanceof Error ? cause.message : "";
-    if (/unique|constraint|idx_appointments_active_employee_start/i.test(databaseMessage)) {
+    if (idempotencyKey) {
+      const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
+        .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();
+      if (previous && previous.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой записи");
+      if (previous) return json({ ok: true, id: previous.appointmentId, changed: previous.changed === 1, replayed: true });
+    }
+    if (/unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(databaseMessage)) {
       return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
     }
     return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);

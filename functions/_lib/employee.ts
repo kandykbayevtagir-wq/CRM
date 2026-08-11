@@ -8,6 +8,13 @@ export function branchIds(body: Record<string, unknown>): string[] {
   return [];
 }
 
+export function serviceIds(body: Record<string, unknown>): string[] {
+  const raw = body.serviceIds ?? body.serviceId;
+  if (Array.isArray(raw)) return raw.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim());
+  if (typeof raw === "string") return raw.split(",").map((value) => value.trim()).filter(Boolean);
+  return [];
+}
+
 export function employeeValues(body: Record<string, unknown>, existing?: Record<string, unknown>) {
   const fullName = stringValue(body, "fullName", String(existing?.full_name ?? ""));
   const position = stringValue(body, "position", String(existing?.position ?? ""));

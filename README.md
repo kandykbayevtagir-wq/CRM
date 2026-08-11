@@ -1,6 +1,6 @@
 # podologymk CRM
 
-`v0.3.0 — Client Experience & Smart Forms` — Telegram Mini App и веб-CRM для подологического центра podologymk.
+`v0.4.0 — Operations & Reliability` — Telegram Mini App и веб-CRM для подологического центра podologymk.
 
 Система покрывает полный рабочий поток: клиент → запись → специалист и филиал → проведение приёма → фактическая оплата → ledger → зарплата → расходы → прибыль и отчёты.
 
@@ -45,6 +45,17 @@
 - история записей по группам «Предстоящие / Прошедшие / Отменённые», перенос, подтверждение отмены, повторная запись и отзывы после завершённого визита;
 - Telegram BackButton, safe-area переменные, мягкие haptics, скрытие клавиатуры после действий и защита от устаревших ответов при быстром переключении дат;
 - клиентские ошибки преобразуются в понятные сообщения, а интерактивные состояния имеют loading, empty, error и success варианты.
+
+## Надёжность v0.4.0
+
+- неизвестный Telegram ID всегда получает роль `CLIENT`; первоначальный `OWNER` создаётся только для `CRM_OWNER_TELEGRAM_ID`;
+- `CRM_ALLOWED_TELEGRAM_IDS` разрешает вход уже созданным staff-пользователям, но больше не выдаёт роль новому пользователю;
+- специалист не может изменить свою запись и назначить её другому сотруднику;
+- `employee_services` ограничивает доступные услуги конкретного специалиста и филиала;
+- availability использует только активный персональный график специалиста — отсутствие графика означает отсутствие окон;
+- 15-минутные reservation-блоки и D1 uniqueness защищают от параллельного бронирования пересекающихся услуг;
+- client booking поддерживает `idempotencyKey`, поэтому сетевой retry возвращает уже созданную запись;
+- новая migration `0007_operations_reliability.sql` добавляет service matrix, slot reservations и idempotency storage.
 
 ## Локальный запуск
 
@@ -97,6 +108,7 @@ D1 migration files находятся в `migrations/`. Prisma migration и D1 m
 ```bash
 npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podologymk-crm
 npx wrangler pages secret put CRM_ALLOWED_TELEGRAM_IDS --project-name podologymk-crm
+npx wrangler pages secret put CRM_OWNER_TELEGRAM_ID --project-name podologymk-crm
 npx wrangler pages secret put TELEGRAM_WEBHOOK_SECRET --project-name podologymk-crm
 ```
 
@@ -123,6 +135,7 @@ TELEGRAM_BOT_TOKEN="..." MINI_APP_URL="https://podologymk-crm.pages.dev" npm run
 - `SEED_OWNER_TELEGRAM_ID` — development seed;
 - `TELEGRAM_BOT_TOKEN` — Cloudflare encrypted secret;
 - `CRM_ALLOWED_TELEGRAM_IDS` — Cloudflare encrypted secret, CSV Telegram ID сотрудников;
+- `CRM_OWNER_TELEGRAM_ID` — единственный Telegram ID, которому разрешён первоначальный owner bootstrap;
 - `TELEGRAM_WEBHOOK_SECRET` — Cloudflare encrypted secret.
 
 ## Tests and checks
@@ -143,5 +156,6 @@ npm run build:pages # production static export
 ## Known technical debt
 
 1. Production сейчас остаётся на существующем Cloudflare D1, чтобы не ломать работающий Pages deploy. Для полноценного PostgreSQL runtime нужен production `DATABASE_URL`/Hyperdrive и отдельный cutover с миграцией данных из D1.
-2. Работающие notification service и scheduled Worker подготовлены, но фактическая доставка событий требует настроенного bot secret и расписания Cloudflare.
-3. Календарь использует рабочие графики сотрудников; если для сотрудника график не задан, доступная ёмкость равна нулю, а не искусственно рассчитанному проценту.
+2. Уведомления пока используют существующий scheduled Worker без полноценной Queue/DLQ outbox-цепочки; это следующий reliability этап.
+3. Поддержка клиента пока открывает Telegram share с готовым текстом, а не внутренний SupportTicket inbox.
+4. Полная матрица услуг уже хранится и проверяется backend, но расширенное редактирование duration/price/commission overrides будет следующим UI-этапом.

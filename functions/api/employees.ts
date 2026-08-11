@@ -2,7 +2,7 @@ import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson } from "../_lib/http";
-import { branchIds, employeeValues } from "../_lib/employee";
+import { branchIds, employeeValues, serviceIds } from "../_lib/employee";
 import { optionalPhoneValue } from "../_lib/validation";
 
 const employeeQuery = `
@@ -11,6 +11,7 @@ const employeeQuery = `
     COALESCE((SELECT group_concat(b2.name, ', ') FROM employee_branches eb2 INNER JOIN branches b2 ON b2.id = eb2.branch_id WHERE eb2.employee_id = e.id), b.name) AS branchName,
     e.fixed_salary AS fixedSalary, e.revenue_percent AS revenuePercent,
     e.is_active AS isActive, e.user_id AS userId,
+    (SELECT group_concat(es.service_id, ',') FROM employee_services es WHERE es.employee_id = e.id AND es.active = 1 AND es.branch_id IS NULL) AS serviceIds,
     (SELECT COUNT(*) FROM appointments ea WHERE ea.employee_id = e.id AND ea.status NOT IN ('CANCELLED', 'NO_SHOW') AND strftime('%Y-%m', ea.starts_at) = strftime('%Y-%m', 'now', 'localtime')) AS appointments,
     (SELECT COALESCE(SUM(p.amount), 0) FROM payments p INNER JOIN appointments pa ON pa.id = p.appointment_id WHERE pa.employee_id = e.id AND pa.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND strftime('%Y-%m', p.paid_at) = strftime('%Y-%m', 'now', 'localtime'))
       - (SELECT COALESCE(SUM(r.amount), 0) FROM payment_adjustments r INNER JOIN payments rp ON rp.id = r.payment_id INNER JOIN appointments ra ON ra.id = rp.appointment_id WHERE ra.employee_id = e.id AND ra.status = 'COMPLETED' AND strftime('%Y-%m', r.occurred_at) = strftime('%Y-%m', 'now', 'localtime')) AS revenue
@@ -24,7 +25,8 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "employees.read")) return forbidden();
   const result = await env.DB.prepare(employeeQuery).all();
-  return json({ ok: true, items: result.results ?? [] });
+  const items = (result.results ?? []).map((item) => ({ ...item, serviceIds: typeof item.serviceIds === "string" ? item.serviceIds.split(",").filter(Boolean) : [] }));
+  return json({ ok: true, items });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
@@ -37,12 +39,18 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!values.fullName || !values.position || values.fixedSalary < 0 || values.revenuePercent < 0) return badRequest("Проверьте имя, должность и зарплатные настройки");
   if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
   const ids = branchIds(body);
+  const requestedServiceIds = serviceIds(body);
+  const services = await env.DB.prepare("SELECT id FROM services WHERE is_active = 1").all<{ id: string }>();
+  const selectedServiceIds = body.serviceIds === undefined && body.serviceId === undefined ? (services.results ?? []).map((service) => service.id) : requestedServiceIds;
+  if (!selectedServiceIds.length) return badRequest("Выберите хотя бы одну услугу");
+  if (selectedServiceIds.some((serviceId) => !(services.results ?? []).some((service) => service.id === serviceId))) return badRequest("Одна из услуг не найдена или архивирована");
   const id = newId();
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`INSERT INTO employees (id, full_name, position, phone, email, branch_id, user_id, fixed_salary, revenue_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, values.fullName, values.position, phone.value, optionalString(body, "email"), ids[0] ?? null, optionalString(body, "userId"), values.fixedSalary, values.revenuePercent),
   ];
   for (const [index, branchId] of ids.entries()) statements.push(env.DB.prepare("INSERT INTO employee_branches (employee_id, branch_id, is_primary) VALUES (?, ?, ?)").bind(id, branchId, index === 0 ? 1 : 0));
+  for (const serviceId of selectedServiceIds) statements.push(env.DB.prepare("INSERT INTO employee_services (id, employee_id, service_id, active) VALUES (?, ?, ?, 1)").bind(newId(), id, serviceId));
   statements.push(auditStatement(env.DB, user, "employee", id, "CREATE", null, { fullName: values.fullName, position: values.position, branchIds: ids }));
   await env.DB.batch(statements);
   return json({ ok: true, id }, 201);

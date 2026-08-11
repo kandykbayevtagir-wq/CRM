@@ -86,6 +86,7 @@ export type EmployeeRecord = {
   appointments: number;
   revenue: number;
   userId?: string | null;
+  serviceIds?: string[];
 };
 
 export type ExpenseRecord = {

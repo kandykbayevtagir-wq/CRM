@@ -6,13 +6,14 @@ import { Download, Plus, UserRoundPlus } from "lucide-react";
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState, Modal } from "@/components/data-state";
 import { Amount, Avatar, Button, PageHeader, SectionCard } from "@/components/ui";
-import type { Branch, EmployeeRecord } from "@/lib/crm-types";
+import type { Branch, EmployeeRecord, ServiceRecord } from "@/lib/crm-types";
 import { formatCurrency, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 import { PhoneInput } from "@/components/phone-input";
 
 type EmployeeResponse = { ok: true; items: EmployeeRecord[] };
 type BranchResponse = { ok: true; items: Branch[] };
+type ServiceResponse = { ok: true; items: ServiceRecord[] };
 
 const tones = ["violet", "blue", "peach", "mint"];
 
@@ -22,6 +23,7 @@ export function EmployeesView() {
   const [formError, setFormError] = useState<string | null>(null);
   const { data, loading, error, reload } = useApi<EmployeeResponse>("/api/employees");
   const { data: branches } = useApi<BranchResponse>("/api/branches");
+  const { data: services } = useApi<ServiceResponse>("/api/services");
   const items = data?.items ?? [];
   const active = items.filter((employee) => employee.isActive).length;
   const revenue = items.reduce((sum, employee) => sum + Number(employee.revenue || 0), 0);
@@ -98,6 +100,7 @@ export function EmployeesView() {
           <FormField label="Телефон"><PhoneInput placeholder="+7 700 123 45 67" enterKeyHint="next" /></FormField>
           <FormField label="Email"><input name="email" type="email" placeholder="employee@example.com" /></FormField>
           <FormField label="Филиалы"><select name="branchIds" multiple size={Math.min(4, Math.max(2, branches?.items.length ?? 2))} defaultValue={[]}>{branches?.items.filter((branch) => branch.isActive).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><small className="form-hint">Можно выбрать несколько филиалов. Первый будет основным.</small></FormField>
+          <FormField label="Услуги сотрудника"><select name="serviceIds" multiple size={Math.min(6, Math.max(3, services?.items.filter((service) => service.isActive).length ?? 3))} defaultValue={services?.items.filter((service) => service.isActive).map((service) => service.id) ?? []}>{services?.items.filter((service) => service.isActive).map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select><small className="form-hint">Показываем клиенту только услуги, которые выполняет этот специалист.</small></FormField>
           <FormField label="Фиксированная часть, ₸"><input name="fixedSalary" type="number" min="0" step="1" placeholder="0" /></FormField>
           <FormField label="Процент с выручки"><input name="revenuePercent" type="number" min="0" max="100" step="0.1" placeholder="0" /></FormField>
           {formError ? <p className="form-error form-field-wide">{formError}</p> : null}

@@ -2,6 +2,7 @@ import { createSession, sessionCookie } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { json, readJson } from "../../_lib/http";
 import { validateTelegramInitData } from "../../_lib/telegram";
+import { isStaffTelegramAllowed, resolveTelegramRole } from "../../../src/lib/auth/bootstrap";
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!env.TELEGRAM_BOT_TOKEN) {
@@ -14,7 +15,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const telegramUser = verified?.user;
   const telegramId = telegramUser?.id === undefined ? "" : String(telegramUser.id);
   const allowedIds = (env.CRM_ALLOWED_TELEGRAM_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
-  const isAllowedStaff = allowedIds.includes(telegramId);
+  const ownerTelegramId = (env.CRM_OWNER_TELEGRAM_ID ?? "").trim();
 
   if (!verified || !telegramUser || !telegramId) {
     return json({ ok: false, error: "Telegram data is invalid" }, 403);
@@ -28,16 +29,16 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const existing = await env.DB.prepare("SELECT id, role, client_id AS clientId, phone, notifications_allowed AS notificationsAllowed, active, telegram_username AS telegramUsername FROM users WHERE telegram_id = ? LIMIT 1")
     .bind(telegramId)
     .first<{ id: string; role: string; clientId: string | null; phone: string | null; notificationsAllowed: number; active: number; telegramUsername: string | null }>();
-  if (existing && existing.role !== "CLIENT" && !isAllowedStaff) {
+  if (existing && !isStaffTelegramAllowed(existing.role, telegramId, allowedIds, ownerTelegramId)) {
     return json({ ok: false, error: "This staff account is not allowed" }, 403);
   }
   if (existing && existing.active !== 1) {
     return json({ ok: false, error: "Учётная запись деактивирована" }, 403);
   }
   const userId = existing?.id ?? crypto.randomUUID();
-  // Unknown Telegram users are client-only accounts. Staff access is never
-  // granted automatically and still requires an explicit allowlist entry.
-  const role = existing?.role ?? (isAllowedStaff ? "OWNER" : "CLIENT");
+  // Unknown Telegram users are client-only accounts. Only the explicitly
+  // configured owner ID can bootstrap the first owner account.
+  const role = resolveTelegramRole(existing?.role, telegramId, ownerTelegramId);
 
   if (existing) {
     await env.DB.prepare(`

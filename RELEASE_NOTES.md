@@ -1,3 +1,26 @@
+# v0.4.0 — Operations & Reliability
+
+Дата: 2026-08-11
+
+## Добавлено
+
+- безопасный Telegram bootstrap: неизвестные ID больше не получают staff-роль из allowlist, owner определяется только через `CRM_OWNER_TELEGRAM_ID`;
+- строгая ownership-проверка для SPECIALIST при изменении записи;
+- `employee_services` с миграционным заполнением текущих активных связей;
+- availability и appointment API проверяют, что специалист оказывает выбранные услуги в выбранном филиале;
+- отсутствие персонального активного графика больше не создаёт искусственные доступные окна;
+- `appointment_slot_reservations` с 15-минутными блоками, покрывающими всю длительность приёма;
+- атомарное создание/перенос записи вместе с reservation rows внутри D1 batch;
+- `booking_idempotency_keys` и `idempotencyKey` в клиентском booking retry;
+- миграция `0007_operations_reliability.sql` без destructive reset.
+
+## Проверки
+
+- локально применены D1 migrations `0001`–`0007`;
+- `npm run typecheck`
+- `npm run lint`
+- `npm run test`
+
 # v0.3.0 — Client Experience & Smart Forms
 
 Дата: 2026-08-11
