@@ -32,10 +32,10 @@ export function useApi<T>(path: string, initialData?: T, options: { enabled?: bo
       setLoading(false);
       return;
     }
-    void reload();
     const handleRefresh = () => void reload();
     window.addEventListener("crm:authenticated", handleRefresh);
     window.addEventListener("crm:data-changed", handleRefresh);
+    void reload();
     return () => {
       window.removeEventListener("crm:authenticated", handleRefresh);
       window.removeEventListener("crm:data-changed", handleRefresh);

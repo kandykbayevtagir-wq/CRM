@@ -1,10 +1,8 @@
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
+import { auditStatement } from "../../_lib/audit";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, newId, optionalString, readJson, stringValue } from "../../_lib/http";
-
-function normalizedPhone(value: string) {
-  return value.replace(/[^\d+]/g, "").trim();
-}
+import { phoneValue, requirePhone } from "../../_lib/validation";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -29,18 +27,26 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!isClient(user)) return forbidden();
   const body = await readJson(request);
   const fullName = stringValue(body, "fullName");
-  const phone = normalizedPhone(stringValue(body, "phone"));
-  if (!fullName || phone.length < 7) return badRequest("Укажите имя и корректный номер телефона");
+  const phoneRaw = stringValue(body, "phone");
+  const phone = requirePhone(phoneValue({ phone: phoneRaw }));
+  if (!fullName || !phone) return badRequest("Укажите имя и корректный номер телефона");
   const email = optionalString(body, "email");
   const notes = optionalString(body, "notes");
-  const existingByPhone = await env.DB.prepare("SELECT id FROM clients WHERE phone = ? LIMIT 1").bind(phone).first<{ id: string }>();
+  const existingByPhone = await env.DB.prepare(`
+    SELECT c.id,
+      EXISTS (SELECT 1 FROM users linked_user WHERE linked_user.client_id = c.id AND linked_user.id <> ?) AS linked
+    FROM clients c
+    WHERE c.phone_normalized = ? AND c.is_active = 1 LIMIT 1
+  `).bind(user.id, phone).first<{ id: string; linked: number }>();
   if (existingByPhone && user.clientId && existingByPhone.id !== user.clientId) return badRequest("Этот номер уже привязан к другой карточке");
+  if (existingByPhone && !user.clientId && existingByPhone.linked === 1) return badRequest("Этот номер уже привязан к другому кабинету");
   const clientId = user.clientId ?? existingByPhone?.id ?? newId();
   const statements: D1PreparedStatement[] = [];
+  const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
   if (user.clientId || existingByPhone) {
-    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phone, email, notes, clientId));
+    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
   } else {
-    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, email, notes) VALUES (?, ?, ?, ?, ?)").bind(clientId, fullName, phone, email, notes));
+    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));
   }
   statements.push(env.DB.prepare("UPDATE users SET client_id = ?, phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(clientId, phone, user.id));
   statements.push(env.DB.prepare("INSERT OR IGNORE INTO client_consents (id, client_id, kind, version) VALUES (?, ?, 'PRIVACY', '2026-08-10')").bind(newId(), clientId));
@@ -52,6 +58,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   } else {
     statements.push(env.DB.prepare("UPDATE client_consents SET revoked_at = CURRENT_TIMESTAMP WHERE client_id = ? AND kind = 'REMINDERS' AND revoked_at IS NULL").bind(clientId));
   }
+  statements.push(auditStatement(env.DB, user, "client", clientId, before ? "UPDATE" : "CREATE", before, { fullName, phone: phoneRaw, phoneNormalized: phone, email, notes, remindersAllowed: allowReminders }));
   await env.DB.batch(statements);
   return json({ ok: true, clientId });
 };

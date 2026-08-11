@@ -2,7 +2,7 @@ export {};
 
 declare global {
   interface TelegramWebApp {
-    initData: string;
+    initData?: string;
     initDataUnsafe?: { start_param?: string; user?: { id?: number; first_name?: string; last_name?: string } };
     colorScheme?: "light" | "dark";
     themeParams?: Record<string, string>;

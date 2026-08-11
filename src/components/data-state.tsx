@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { AlertCircle, Database, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui";
+import { dispatchCrmEvent } from "@/lib/api-client";
 
 export function LoadingState({ label = "Загружаем данные…" }: { label?: string }) {
   return (
@@ -51,9 +52,9 @@ export function FormField({ label, children, className = "" }: { label: string; 
 }
 
 export function AuthHint() {
-  return <EmptyState title="Доступ не подтверждён" description="Откройте podologymk внутри Telegram. Доступ появится только для Telegram ID, привязанного к системе." />;
+  return <EmptyState title="Не удалось подтвердить Telegram" description="Откройте Mini App через кнопку бота. Если вы уже внутри Telegram, нажмите повторную проверку — соединение и Telegram ID будут запрошены заново." action={<Button variant="secondary" onClick={() => dispatchCrmEvent("crm:telegram-retry")}><RefreshCw size={14} /> Повторить проверку</Button>} />;
 }
 
 export function isAuthError(message: string | null) {
-  return Boolean(message && /авторизац|telegram authorization|доступ/i.test(message));
+  return Boolean(message && /авторизац|telegram authorization|telegram data|пользователь не приглашён|учётная запись деактивирована/i.test(message));
 }

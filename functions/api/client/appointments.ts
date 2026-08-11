@@ -65,37 +65,38 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const service = await env.DB.prepare("SELECT name, duration_minutes AS durationMinutes FROM services WHERE id = ?").bind(serviceId).first<{ name: string; durationMinutes: number }>();
   const branch = await env.DB.prepare("SELECT name FROM branches WHERE id = ?").bind(branchId).first<{ name: string }>();
   const client = await env.DB.prepare("SELECT full_name AS fullName FROM clients WHERE id = ?").bind(user.clientId).first<{ fullName: string }>();
+  if (!service || !branch || !client) return badRequest("Услуга, филиал или профиль клиента не найдены");
   const id = existing?.id ?? newId();
   const changed = Boolean(existing);
-  try {
-    if (existing) {
-      await env.DB.batch([
+  const appointmentStatements: D1PreparedStatement[] = existing
+    ? [
         env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, ends_at = ?, status = 'SCHEDULED', source = 'TELEGRAM', total_amount = ?, cancel_reason = NULL, cancelled_at = NULL, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.endsAt, slot.price, user.id, id),
+        env.DB.prepare("DELETE FROM appointment_services WHERE appointment_id = ?").bind(id),
+        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, serviceId, slot.price, service.durationMinutes),
         env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, 'SCHEDULED', ?, 'Клиент перенёс запись')").bind(newId(), id, existing.status, user.id),
-      ]);
-    } else {
-      await env.DB.batch([
+      ]
+    : [
         env.DB.prepare("INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, ends_at, status, source, total_amount, check_in_token, created_by, changed_by) VALUES (?, ?, ?, ?, ?, ?, 'SCHEDULED', 'TELEGRAM', ?, ?, ?, ?)").bind(id, user.clientId, employeeId, branchId, startsAt, slot.endsAt, slot.price, newCheckInToken(), user.id, user.id),
-        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes) VALUES (?, ?, ?, ?)").bind(id, serviceId, slot.price, service?.durationMinutes ?? 60),
+        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, serviceId, slot.price, service.durationMinutes),
         env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, NULL, 'SCHEDULED', ?, 'Клиент создал запись')").bind(newId(), id, user.id),
-      ]);
-    }
-  } catch {
-    return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
-  }
-
+      ];
   const notificationId = newId();
-  await env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(id).run();
   const reminderTimes = [
     { kind: "REMINDER_24H", time: new Date(new Date(startsAt).getTime() - 24 * 60 * 60_000) },
     { kind: "REMINDER_2H", time: new Date(new Date(startsAt).getTime() - 2 * 60 * 60_000) },
   ].filter((reminder) => reminder.time.getTime() > Date.now());
-  await env.DB.batch([
+  const notificationStatements: D1PreparedStatement[] = [
+    env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(id),
     env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)")
       .bind(notificationId, user.id, user.clientId, id, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ startsAt })),
     ...reminderTimes.map((reminder) => env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(newId(), user.id, user.clientId, id, reminder.kind, reminder.time.toISOString(), JSON.stringify({ startsAt }))),
-  ]);
+  ];
+  try {
+    await env.DB.batch([...appointmentStatements, ...notificationStatements]);
+  } catch {
+    return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
+  }
   const message = appointmentMessage(client?.fullName ?? user.name, startsAt, service?.name ?? "Приём", branch?.name ?? "Филиал", changed);
   context.waitUntil(sendTelegramMessage(env, user.telegramId, message).then(() => env.DB.prepare("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()).catch(() => env.DB.prepare("UPDATE notifications SET status = 'FAILED', attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()));
   return json({ ok: true, id, changed }, changed ? 200 : 201);

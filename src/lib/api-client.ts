@@ -45,6 +45,6 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   return payload;
 }
 
-export function dispatchCrmEvent(name: "crm:authenticated" | "crm:data-changed") {
+export function dispatchCrmEvent(name: "crm:authenticated" | "crm:data-changed" | "crm:telegram-retry") {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(name));
 }
