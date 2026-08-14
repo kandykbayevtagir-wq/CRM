@@ -90,12 +90,13 @@ export async function prepareAppointmentConsumption(db: D1Database, appointmentI
     const movementId = `movement-${idempotencyKey.replaceAll(":", "-")}`;
     statements.push(db.prepare(`INSERT OR IGNORE INTO stock_movements
       (id, product_id, branch_id, movement_type, direction, quantity, unit_price, total_cost, occurred_at, source, appointment_id, idempotency_key, comment)
-      VALUES (?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, CURRENT_TIMESTAMP, 'APPOINTMENT_COMPLETION', ?, ?, ?)`)
-      .bind(movementId, row.productId, row.branchId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), appointmentId, idempotencyKey, `Автоматическое списание по услуге ${row.serviceId}`));
+      SELECT ?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, CURRENT_TIMESTAMP, 'APPOINTMENT_COMPLETION', ?, ?, ?
+      WHERE ? <= (SELECT ${stockBalanceExpression("available_sm")} FROM stock_movements available_sm WHERE available_sm.product_id = ? AND available_sm.branch_id = ?)`)
+      .bind(movementId, row.productId, row.branchId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), appointmentId, idempotencyKey, `Автоматическое списание по услуге ${row.serviceId}`, quantity.toNumber(), row.productId, row.branchId));
     statements.push(db.prepare(`INSERT OR IGNORE INTO inventory_consumptions
       (id, appointment_id, service_id, product_id, stock_movement_id, quantity, unit_cost, total_cost)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(`consumption-${idempotencyKey.replaceAll(":", "-")}`, appointmentId, row.serviceId, row.productId, movementId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber()));
+      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_movements WHERE id = ?)`)
+      .bind(`consumption-${idempotencyKey.replaceAll(":", "-")}`, appointmentId, row.serviceId, row.productId, movementId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), movementId));
     statements.push(db.prepare("UPDATE inventory_issues SET status = 'RESOLVED', resolved_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND service_id = ? AND product_id = ? AND status = 'OPEN'")
       .bind(appointmentId, row.serviceId, row.productId));
   }

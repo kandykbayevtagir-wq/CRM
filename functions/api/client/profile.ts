@@ -34,17 +34,19 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const email = optionalString(body, "email");
   const notes = optionalString(body, "notes");
   const existingByPhone = await env.DB.prepare(`
-    SELECT c.id,
-      EXISTS (SELECT 1 FROM users linked_user WHERE linked_user.client_id = c.id AND linked_user.id <> ?) AS linked
+    SELECT c.id
     FROM clients c
     WHERE c.phone_normalized = ? AND c.is_active = 1 LIMIT 1
-  `).bind(user.id, phone).first<{ id: string; linked: number }>();
+  `).bind(phone).first<{ id: string }>();
   if (existingByPhone && user.clientId && existingByPhone.id !== user.clientId) return badRequest("Проверьте данные", { phone: "Этот номер уже привязан к другой карточке" });
-  if (existingByPhone && !user.clientId && existingByPhone.linked === 1) return badRequest("Проверьте данные", { phone: "Этот номер уже связан с другим личным кабинетом. Если это ваш номер, напишите администратору." });
-  const clientId = user.clientId ?? existingByPhone?.id ?? newId();
+  // Never attach a Telegram user to an existing card based only on a phone number.
+  // A phone number is an identifier, not proof of ownership, and this endpoint is
+  // reachable by any authenticated Telegram account.
+  if (existingByPhone && !user.clientId) return badRequest("Проверьте данные", { phone: "Этот номер уже используется в CRM. Для защиты данных обратитесь администратору." });
+  const clientId = user.clientId ?? newId();
   const statements: D1PreparedStatement[] = [];
   const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
-  if (user.clientId || existingByPhone) {
+  if (user.clientId) {
     statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
   } else {
     statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));

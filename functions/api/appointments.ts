@@ -94,8 +94,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!startsAt || !branchId || !employeeId || !serviceIds.length || (user.role === "SPECIALIST" && employeeId !== ownId)) return badRequest("Дата, филиал, специалист, клиент и услуги обязательны");
 
   const [branch, employee] = await Promise.all([
-    env.DB.prepare("SELECT id FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first<{ id: string }>(),
-    env.DB.prepare("SELECT e.id FROM employees e WHERE e.id = ? AND e.is_active = 1 AND EXISTS (SELECT 1 FROM employee_branches eb WHERE eb.employee_id = e.id AND eb.branch_id = ?)").bind(employeeId, branchId).first<{ id: string }>(),
+    env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first<{ id: string; name: string }>(),
+    env.DB.prepare("SELECT e.id, e.full_name AS fullName FROM employees e WHERE e.id = ? AND e.is_active = 1 AND EXISTS (SELECT 1 FROM employee_branches eb WHERE eb.employee_id = e.id AND eb.branch_id = ?)").bind(employeeId, branchId).first<{ id: string; fullName: string }>(),
   ]);
   if (!branch) return badRequest("Филиал не найден или архивирован");
   if (!employee) return badRequest("Специалист не работает в выбранном филиале");
@@ -139,7 +139,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
 
   const id = newId();
   const statusValue = stringValue(body, "status", "SCHEDULED").toUpperCase();
-  const status = statusValue === "CONFIRMED" ? "CONFIRMED" : "SCHEDULED";
+  if (!["SCHEDULED", "CONFIRMED"].includes(statusValue)) return badRequest("Новая запись может быть только запланирована или подтверждена");
+  const status = statusValue;
   const sourceValue = stringValue(body, "source", "ADMIN").toUpperCase();
   const source = sources.has(sourceValue) ? sourceValue : "ADMIN";
   statements.push(env.DB.prepare(`INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, ends_at, status, source, total_amount, notes, check_in_token, created_by, changed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -156,8 +157,18 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const reminder2 = new Date(startMs - 2 * 60 * 60_000);
   if (clientId) {
     statements.push(env.DB.prepare("UPDATE follow_ups SET status = 'BOOKED', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, clientId));
-    for (const scheduledAt of [reminder24, reminder2]) {
-      if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, 'APPOINTMENT_REMINDER', ?, ?)").bind(newId(), clientId, id, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id })));
+    const reminders: Array<readonly [string, Date]> = [["REMINDER_24H", reminder24], ["REMINDER_2H", reminder2]];
+    for (const [kind, scheduledAt] of reminders) {
+      if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)").bind(newId(), clientId, id, kind, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id })));
+    }
+    const recipient = await env.DB.prepare(`
+      SELECT u.telegram_id AS telegramId, u.notifications_allowed AS notificationsAllowed, c.full_name AS clientName
+      FROM users u INNER JOIN clients c ON c.id = u.client_id
+      WHERE c.id = ? AND u.active = 1 AND u.notifications_allowed = 1 LIMIT 1
+    `).bind(clientId).first<{ telegramId: string; notificationsAllowed: number; clientName: string }>();
+    if (recipient) {
+      statements.push(env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, 'BOOKING_CONFIRMED', ?)")
+        .bind(newId(), `appointment:${id}:confirmed:staff`, recipient.telegramId, JSON.stringify({ clientName: recipient.clientName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), specialist: employee.fullName, service: services[0]?.name ?? "Приём", branch: branch.name })));
     }
   }
   try {

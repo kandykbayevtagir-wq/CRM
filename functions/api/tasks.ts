@@ -2,6 +2,7 @@ import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, dateValue, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { getOwnEmployeeId } from "../_lib/access";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -9,6 +10,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!hasCrmPermission(user, "tasks.read")) return forbidden();
   const params = new URL(request.url).searchParams;
   const filters = ["1 = 1"]; const bindings: string[] = [];
+  if (user.role === "SPECIALIST") { filters.push("t.assignee_id = ?"); bindings.push(user.id); }
   if (params.get("status")) { filters.push("t.status = ?"); bindings.push(params.get("status") as string); }
   const scope = params.get("scope");
   if (scope === "mine") { filters.push("t.assignee_id = ?"); bindings.push(user.id); }
@@ -27,9 +29,19 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const title = stringValue(body, "title");
   const priority = stringValue(body, "priority", "NORMAL").toUpperCase();
   if (!title || !["LOW", "NORMAL", "HIGH", "URGENT"].includes(priority)) return badRequest("Укажите название и корректный приоритет");
+  const ownEmployeeId = await getOwnEmployeeId(env.DB, user);
+  const requestedAssignee = optionalString(body, "assigneeId");
+  const requestedClient = optionalString(body, "clientId");
+  const requestedAppointment = optionalString(body, "appointmentId");
+  if (user.role === "SPECIALIST") {
+    if (!ownEmployeeId) return forbidden("Профиль специалиста не привязан к сотруднику");
+    if (requestedAssignee && requestedAssignee !== user.id) return forbidden("Специалист может назначать задачи только себе");
+    if (requestedClient && !requestedAppointment) return forbidden("Задача специалиста должна быть связана с его записью");
+    if (requestedAppointment && !await env.DB.prepare("SELECT id FROM appointments WHERE id = ? AND employee_id = ? AND (? IS NULL OR client_id = ?)").bind(requestedAppointment, ownEmployeeId, requestedClient, requestedClient).first()) return forbidden("Задача может быть связана только с вашей записью и клиентом");
+  }
   const id = newId();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO tasks (id, title, description, assignee_id, creator_id, client_id, appointment_id, branch_id, due_date, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, title, optionalString(body, "description"), optionalString(body, "assigneeId"), user.id, optionalString(body, "clientId"), optionalString(body, "appointmentId"), optionalString(body, "branchId"), dateValue(body, "dueDate") || null, priority),
+    env.DB.prepare("INSERT INTO tasks (id, title, description, assignee_id, creator_id, client_id, appointment_id, branch_id, due_date, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, title, optionalString(body, "description"), user.role === "SPECIALIST" ? user.id : requestedAssignee, user.id, optionalString(body, "clientId"), requestedAppointment, optionalString(body, "branchId"), dateValue(body, "dueDate") || null, priority),
     auditStatement(env.DB, user, "task", id, "CREATE", null, { title, priority }),
   ]);
   return json({ ok: true, id }, 201);

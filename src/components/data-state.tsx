@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { AlertCircle, Database, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui";
@@ -36,10 +38,30 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
 }
 
 export function Modal({ title, children, footer, onClose }: { title: string; children: ReactNode; footer?: ReactNode; onClose: () => void }) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    const focusable = () => panel ? Array.from(panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled")) : [];
+    focusable()[0]?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (!elements.length) return;
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("keydown", onKeyDown); previousActive?.focus(); };
+  }, [onClose]);
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="modal-panel" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="modal-heading"><div><p className="eyebrow">Новая запись в системе</p><h2>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Закрыть">×</button></div>
+      <section ref={panelRef} className="modal-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <div className="modal-heading"><div><p className="eyebrow">Новая запись в системе</p><h2 id={titleId}>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Закрыть">×</button></div>
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-footer">{footer}</div> : null}
       </section>

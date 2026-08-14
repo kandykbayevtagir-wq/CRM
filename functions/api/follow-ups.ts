@@ -26,8 +26,17 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const recommendedDate = dateValue(body, "recommendedDate") || (days !== null && days >= 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : "");
   if (!clientId || !recommendedDate) return badRequest("Укажите клиента и дату повторного визита");
   if (!await env.DB.prepare("SELECT id FROM clients WHERE id = ? AND is_active = 1").bind(clientId).first()) return badRequest("Клиент не найден");
+  let assignedTo = optionalString(body, "assignedTo") || user.id;
+  if (user.role === "SPECIALIST") {
+    const employeeId = (await env.DB.prepare("SELECT id FROM employees WHERE user_id = ? AND is_active = 1 LIMIT 1").bind(user.id).first<{ id: string }>())?.id;
+    if (!employeeId) return forbidden("Профиль специалиста не привязан к сотруднику");
+    if (!appointmentId || !await env.DB.prepare("SELECT id FROM appointments WHERE id = ? AND client_id = ? AND employee_id = ?").bind(appointmentId, clientId, employeeId).first()) return forbidden("Follow-up можно создать только для своей записи");
+    assignedTo = user.id;
+  } else if (appointmentId && !await env.DB.prepare("SELECT id FROM appointments WHERE id = ? AND client_id = ?").bind(appointmentId, clientId).first()) {
+    return badRequest("Запись не принадлежит выбранному клиенту");
+  }
   const id = newId();
-  const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO follow_ups (id, client_id, appointment_id, recommended_date, interval_days, assigned_to, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, clientId, appointmentId, recommendedDate, days, optionalString(body, "assignedTo") || user.id, user.id)];
+  const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO follow_ups (id, client_id, appointment_id, recommended_date, interval_days, assigned_to, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, clientId, appointmentId, recommendedDate, days, assignedTo, user.id)];
   if (body.sendTelegram === true) {
     const recipient = await env.DB.prepare("SELECT u.telegram_id AS telegramId, c.full_name AS clientName FROM users u INNER JOIN clients c ON c.id = u.client_id WHERE c.id = ? AND u.notifications_allowed = 1 LIMIT 1").bind(clientId).first<{ telegramId: string; clientName: string }>();
     if (recipient) statements.push(env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, 'FOLLOW_UP', ?)").bind(newId(), `follow-up:${id}`, recipient.telegramId, JSON.stringify({ clientName: recipient.clientName })));

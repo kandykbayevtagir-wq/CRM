@@ -44,7 +44,7 @@ async function processNotifications(env: NotificationEnv) {
     INNER JOIN clients c ON c.id = n.client_id
     INNER JOIN appointments a ON a.id = n.appointment_id
     LEFT JOIN branches b ON b.id = a.branch_id
-    WHERE n.status = 'PENDING' AND u.notifications_allowed = 1
+    WHERE n.status = 'PENDING' AND n.kind IN ('REMINDER_24H', 'REMINDER_2H') AND u.notifications_allowed = 1
       AND a.status NOT IN ('CANCELLED', 'NO_SHOW')
       AND julianday(n.scheduled_at) <= julianday('now')
     ORDER BY n.scheduled_at ASC
@@ -67,6 +67,8 @@ function renderTemplate(template: string, payload: Record<string, unknown>) {
 }
 
 async function processOutbox(env: NotificationEnv) {
+  // Recover messages left PROCESSING by a worker restart before claiming new work.
+  await env.DB.prepare("UPDATE message_outbox SET status = 'PENDING', next_retry_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'PROCESSING' AND updated_at < datetime('now', '-10 minutes')").run();
   const rows = await env.DB.prepare(`SELECT mo.id, mo.event_key AS eventKey, mo.telegram_id AS telegramId, mo.template_key AS templateKey, mo.payload_json AS payloadJson, mo.attempts FROM message_outbox mo WHERE mo.status IN ('PENDING', 'FAILED') AND mo.attempts < 3 AND mo.next_retry_at <= CURRENT_TIMESTAMP ORDER BY mo.next_retry_at ASC LIMIT 100`).all<OutboxRow>();
   for (const row of rows.results ?? []) {
     const claim = await env.DB.prepare("UPDATE message_outbox SET status = 'PROCESSING', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('PENDING', 'FAILED') AND attempts < 3").bind(row.id).run();
@@ -79,7 +81,7 @@ async function processOutbox(env: NotificationEnv) {
       const body = typeof template === "string" ? template : template.enabled ? template.body : "";
       if (!body) throw new Error("Notification template is disabled or missing");
       await sendRawTelegramMessage(env.TELEGRAM_BOT_TOKEN, row.telegramId, renderTemplate(body, payload));
-      await env.DB.prepare("UPDATE message_outbox SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(row.id).run();
+      await env.DB.prepare("UPDATE message_outbox SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'PROCESSING'").bind(row.id).run();
       if (typeof payload.campaignId === "string" && typeof payload.clientId === "string") {
         await env.DB.batch([
           env.DB.prepare("UPDATE campaign_recipients SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE campaign_id = ? AND client_id = ? AND status <> 'SENT'").bind(payload.campaignId, payload.clientId),

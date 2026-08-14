@@ -148,6 +148,28 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
+  async function markNotificationRead(notificationKey: string) {
+    try {
+      await apiFetch("/api/notifications", { method: "POST", body: { notificationKey } });
+    } catch {
+      // The item remains unread when the network is unavailable.
+    } finally {
+      await reloadNotifications();
+    }
+  }
+
+  async function markAllNotificationsRead() {
+    const keys = notifications?.items.filter((item) => !item.read).map((item) => item.id) ?? [];
+    if (!keys.length) return;
+    try {
+      await apiFetch("/api/notifications", { method: "POST", body: { notificationKeys: keys } });
+    } catch {
+      // Keep the badge if the read state could not be saved.
+    } finally {
+      await reloadNotifications();
+    }
+  }
+
   if (authLoading && !user) return <LoadingState label="Проверяем доступ через Telegram…" />;
   if (authError && isAuthError(authError)) return <AuthHint />;
   if (authError && !user) return <ErrorState message={authError} onRetry={reloadAuth} />;
@@ -222,8 +244,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="help-card">
             <div className="help-icon"><CircleHelp size={17} /></div>
             <div>
-              <strong>Нужна помощь?</strong>
-              <span>Открыть базу знаний</span>
+              <strong>Рабочая версия CRM</strong>
+              <span>Данные синхронизируются с облаком</span>
             </div>
           </div>
           <div className="sidebar-user">
@@ -247,10 +269,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               {notifications?.unreadCount ? <span className="notification-count">{notifications.unreadCount > 9 ? "9+" : notifications.unreadCount}</span> : null}
             </button>
             {openPanel === "notifications" ? <div className="topbar-popover notifications-popover">
-              <div className="popover-heading"><div><span className="eyebrow">Центр событий</span><strong>Уведомления</strong></div><button className="popover-refresh" onClick={() => void reloadNotifications()} aria-label="Обновить уведомления"><RefreshCw size={15} /></button></div>
+              <div className="popover-heading"><div><span className="eyebrow">Центр событий</span><strong>Уведомления</strong></div><div className="popover-heading-actions">{notifications?.unreadCount ? <button className="notification-mark-all" onClick={() => void markAllNotificationsRead()}>Прочитать всё</button> : null}<button className="popover-refresh" onClick={() => void reloadNotifications()} aria-label="Обновить уведомления"><RefreshCw size={15} /></button></div></div>
               {notificationsLoading ? <div className="popover-empty"><RefreshCw size={20} className="spin" /><strong>Загружаю события</strong><span>Проверяю записи, оплаты и изменения.</span></div> : notificationsError ? <div className="popover-empty"><Bell size={20} /><strong>Не удалось загрузить уведомления</strong><span>{notificationsError}</span><button className="button button-secondary" onClick={() => void reloadNotifications()}>Повторить</button></div> : !notifications?.items.length ? <div className="popover-empty"><Bell size={20} /><strong>Пока всё спокойно</strong><span>Новые записи, оплаты и изменения появятся здесь.</span></div> : <div className="notification-list">{notifications.items.map((item) => {
                 const content = <><span className={`notification-item-icon notification-kind-${item.kind.toLowerCase()}`}><Bell size={14} /></span><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.description}</span><small>{formatShellDate(item.occurredAt)}</small></span>{!item.read ? <i className="notification-unread" /> : null}</>;
-                return item.href ? <Link href={item.href} key={item.id} className="notification-item" onClick={() => setOpenPanel(null)}>{content}</Link> : <div key={item.id} className="notification-item">{content}</div>;
+                const onNotificationClick = () => { if (!item.read) void markNotificationRead(item.id); setOpenPanel(null); };
+                return item.href ? <Link href={item.href} key={item.id} className="notification-item" onClick={onNotificationClick}>{content}</Link> : <button type="button" key={item.id} className="notification-item notification-item-button" onClick={onNotificationClick}>{content}</button>;
               })}</div>}
             </div> : null}
             <button className={`topbar-profile ${openPanel === "profile" ? "topbar-control-active" : ""}`} aria-label="Открыть профиль" aria-expanded={openPanel === "profile"} onClick={() => setOpenPanel(openPanel === "profile" ? null : "profile")}>

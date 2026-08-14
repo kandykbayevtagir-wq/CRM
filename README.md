@@ -1,6 +1,6 @@
 # podologymk CRM
 
-`v0.5.0 — Business OS` — Inventory, Intelligence, Retention & UX для Telegram Mini App и веб-CRM подологического центра podologymk.
+v0.6.0 — Production Hardening & Operations UX — безопасная работа с данными, конкурентные финансовые операции, надёжные Telegram-события и отполированный Mini App для podologymk.
 
 Система покрывает полный рабочий поток: клиент → запись → специалист и филиал → проведение приёма → фактическая оплата → ledger → зарплата → расходы → прибыль и отчёты.
 
@@ -70,6 +70,18 @@
 - глобальный поиск `Ctrl/Cmd + K`, CSV-экспорт склада, движений, закупок, задач, KPI и P&L;
 - единый glass-поверхностный UI, адаптивные операционные экраны, loading/empty/error/success состояния и production health endpoint;
 - новая D1 migration `0008_business_os.sql`; Prisma schema синхронизирована с добавленными сущностями.
+
+## Production hardening v0.6.0
+
+- запрещено автоматически присоединять Telegram-пользователя к существующей карточке клиента только по введённому номеру телефона;
+- SPECIALIST получает на backend только свои записи, клиенты, задачи, follow-up, отзывы и ближайшие события;
+- запись проходит последовательные статусы CONFIRMED → ARRIVED → IN_PROGRESS → COMPLETED, а завершение доступно только из IN_PROGRESS;
+- оплата, возврат, ручное списание и приёмка закупки используют условные D1-записи и idempotency, поэтому конкурентный retry не создаёт отрицательный остаток или двойной платёж;
+- P&L строит дневную net-выручку после возвратов, учитывает периодные платежи в детализации услуг и фильтрует payroll по выбранному срезу;
+- подтверждение, перенос и отмена клиентской записи ставятся в надёжный Telegram outbox с уникальным event key и восстановлением зависших PROCESSING;
+- модальные окна получили Escape, фокус-ловушку, возврат фокуса и доступный заголовок; уведомления можно отметить прочитанными;
+- усилены CSP, HSTS, frame и referrer headers, мобильные touch targets и safe-area отступы;
+- добавлена D1 migration 0009_production_hardening.sql.
 
 ## Локальный запуск
 
@@ -170,7 +182,6 @@ npm run build:pages # production static export
 ## Known technical debt
 
 1. Production сейчас остаётся на существующем Cloudflare D1, чтобы не ломать работающий Pages deploy. Для полноценного PostgreSQL runtime нужен production `DATABASE_URL`/Hyperdrive и отдельный cutover с миграцией данных из D1.
-2. Уведомления пока используют существующий scheduled Worker без полноценной Queue/DLQ outbox-цепочки; это следующий reliability этап.
-3. Cloudflare Queue/DLQ bindings не добавлены в текущий deploy: outbox уже работает через scheduled Worker, а Queue можно подключить без изменения доменной модели.
-4. Production runtime сохраняется на D1; Prisma/PostgreSQL остаётся канонической схемой для будущего controlled cutover через Hyperdrive/API.
-5. Массовые кампании ограничены Telegram и требуют настроенного `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` и cron Worker.
+2. Cloudflare Queue/DLQ bindings не добавлены в текущий deploy: outbox работает через scheduled Worker с retry/backoff и восстановлением lease; Queue можно подключить без изменения доменной модели.
+3. Production runtime сохраняется на D1; Prisma/PostgreSQL остаётся канонической схемой для будущего controlled cutover через Hyperdrive/API.
+4. Массовые кампании ограничены Telegram и требуют настроенного `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` и cron Worker.

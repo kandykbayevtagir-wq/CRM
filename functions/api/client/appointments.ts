@@ -3,12 +3,6 @@ import { findAvailableSlots } from "../../_lib/availability";
 import { reservationStatements } from "../../_lib/booking";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, conflict, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
-import { sendTelegramMessage } from "../../_lib/telegram-bot";
-
-function appointmentMessage(clientName: string, startsAt: string, serviceName: string, branchName: string, changed = false) {
-  const date = new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: "Asia/Almaty" }).format(new Date(startsAt));
-  return `${changed ? "🔄 Запись перенесена" : "✅ Запись подтверждена"}\n\n${serviceName}\n${date}\n${branchName}\n\n${clientName}, если планы изменятся, запись можно перенести в Mini App.`;
-}
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -74,8 +68,9 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
 
   const service = await env.DB.prepare("SELECT name, duration_minutes AS durationMinutes FROM services WHERE id = ?").bind(serviceId).first<{ name: string; durationMinutes: number }>();
   const branch = await env.DB.prepare("SELECT name FROM branches WHERE id = ?").bind(branchId).first<{ name: string }>();
+  const employee = await env.DB.prepare("SELECT full_name AS fullName FROM employees WHERE id = ?").bind(employeeId).first<{ fullName: string }>();
   const client = await env.DB.prepare("SELECT full_name AS fullName FROM clients WHERE id = ?").bind(user.clientId).first<{ fullName: string }>();
-  if (!service || !branch || !client) return badRequest("Услуга, филиал или профиль клиента не найдены");
+  if (!service || !branch || !employee || !client) return badRequest("Услуга, филиал, специалист или профиль клиента не найдены");
   const id = existing?.id ?? newId();
   const changed = Boolean(existing);
   const appointmentStatements: D1PreparedStatement[] = existing
@@ -101,6 +96,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
       .bind(notificationId, user.id, user.clientId, id, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ startsAt })),
     ...reminderTimes.map((reminder) => env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(newId(), user.id, user.clientId, id, reminder.kind, reminder.time.toISOString(), JSON.stringify({ startsAt }))),
+    env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, ?, ?)")
+      .bind(newId(), `appointment:${id}:${changed ? `changed:${startsAt}` : "confirmed"}`, user.telegramId, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ clientName: client.fullName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), specialist: employee.fullName, service: service.name, branch: branch.name })),
   ];
   const reservationChanges: D1PreparedStatement[] = [
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(id),
@@ -124,7 +121,5 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
     }
     return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);
   }
-  const message = appointmentMessage(client?.fullName ?? user.name, startsAt, service?.name ?? "Приём", branch?.name ?? "Филиал", changed);
-  context.waitUntil(sendTelegramMessage(env, user.telegramId, message).then(() => env.DB.prepare("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()).catch(() => env.DB.prepare("UPDATE notifications SET status = 'FAILED', attempts = attempts + 1 WHERE id = ?").bind(notificationId).run()));
   return json({ ok: true, id, changed }, changed ? 200 : 201);
 };

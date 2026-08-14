@@ -1,4 +1,3 @@
-import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, conflict, dateValue, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
@@ -35,7 +34,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!appointmentId || amount === null || amount <= 0 || !method) return badRequest("Укажите запись, положительную сумму и способ оплаты");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [appointmentId, amount.toFixed(2), method].join("|");
-  const previousPayment = await env.DB.prepare("SELECT payment_id AS paymentId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ paymentId: string; requestHash: string }>();
+  const previousPayment = await env.DB.prepare("SELECT payment_id AS paymentId, user_id AS userId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? LIMIT 1").bind(idempotencyKey).first<{ paymentId: string; userId: string; requestHash: string }>();
+  if (previousPayment && previousPayment.userId !== user.id) return conflict("Этот ключ уже использован");
   if (previousPayment && previousPayment.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой оплаты");
   if (previousPayment) return json({ ok: true, id: previousPayment.paymentId, paymentId: previousPayment.paymentId, replayed: true });
   const appointment = await env.DB.prepare("SELECT id, branch_id AS branchId, total_amount AS totalAmount, status FROM appointments WHERE id = ?").bind(appointmentId).first<{ id: string; branchId: string; totalAmount: number; status: string }>();
@@ -51,12 +51,28 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const dbMethod = method === "QR" ? "TRANSFER" : method;
   const note = method === "QR" ? `[QR] ${optionalString(body, "note") ?? ""}`.trim() : optionalString(body, "note");
   try {
-    await env.DB.batch([
-    env.DB.prepare("INSERT INTO payments (id, appointment_id, amount, method, payment_status, paid_at, note, created_by) VALUES (?, ?, ?, ?, 'POSTED', ?, ?, ?)").bind(paymentId, appointmentId, amount, dbMethod, paidAt, note, user.id),
-    env.DB.prepare("INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, appointment_id, payment_id, description, created_by) VALUES (?, 'INCOME', 'PAYMENT', 'SERVICE', ?, 'POSTED', ?, ?, ?, ?, ?, ?)").bind(transactionId, amount, paidAt, appointment.branchId, appointmentId, paymentId, note ?? "Оплата услуги", user.id),
-    env.DB.prepare("INSERT INTO payment_idempotency_keys (idempotency_key, user_id, payment_id, request_hash) VALUES (?, ?, ?, ?)").bind(idempotencyKey, user.id, paymentId, requestHash),
-    auditStatement(env.DB, user, "payment", paymentId, "CREATE", null, { appointmentId, amount, method, paidAt }),
+    const results = await env.DB.batch([
+      // The balance check is part of the INSERT. The earlier read is only for
+      // a friendly error; it must not be the concurrency guard.
+      env.DB.prepare(`
+        INSERT INTO payments (id, appointment_id, amount, method, payment_status, paid_at, note, created_by)
+        SELECT ?, ?, ?, ?, 'POSTED', ?, ?, ?
+        FROM appointments a
+        WHERE a.id = ? AND a.status NOT IN ('CANCELLED', 'NO_SHOW')
+          AND ? <= a.total_amount - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.appointment_id = a.id AND p.payment_status = 'POSTED'), 0)
+            + COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa INNER JOIN payments rp ON rp.id = pa.payment_id WHERE rp.appointment_id = a.id), 0)
+      `).bind(paymentId, appointmentId, amount, dbMethod, paidAt, note, user.id, appointmentId, amount),
+      env.DB.prepare(`INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, appointment_id, payment_id, description, created_by)
+        SELECT ?, 'INCOME', 'PAYMENT', 'SERVICE', ?, 'POSTED', ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM payments WHERE id = ?)`)
+        .bind(transactionId, amount, paidAt, appointment.branchId, appointmentId, paymentId, note ?? "Оплата услуги", user.id, paymentId),
+      env.DB.prepare("INSERT INTO payment_idempotency_keys (idempotency_key, user_id, payment_id, request_hash) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM payments WHERE id = ?)")
+        .bind(idempotencyKey, user.id, paymentId, requestHash, paymentId),
+      env.DB.prepare(`INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, before_json, after_json)
+        SELECT ?, ?, 'payment', ?, 'CREATE', NULL, ? WHERE EXISTS (SELECT 1 FROM payments WHERE id = ?)`)
+        .bind(newId(), user.id, paymentId, JSON.stringify({ appointmentId, amount, method, paidAt }), paymentId),
     ]);
+    if (Number(results[0]?.meta.changes ?? 0) !== 1) return conflict("Оплата превышает актуальный остаток или запись уже закрыта");
   } catch (error) {
     if (/unique|constraint/i.test(error instanceof Error ? error.message : "")) {
       const replay = await env.DB.prepare("SELECT payment_id AS paymentId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ paymentId: string; requestHash: string }>();
@@ -64,5 +80,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     }
     return json({ ok: false, error: "Не удалось сохранить оплату" }, 500);
   }
-  return json({ ok: true, id: paymentId, paymentId, paidAmount: Number(paid?.value ?? 0) + amount, balance: Math.max(0, balance - amount) }, 201);
+  const actualPaid = await env.DB.prepare("SELECT COALESCE(SUM(p.amount), 0) - COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa INNER JOIN payments rp ON rp.id = pa.payment_id WHERE rp.appointment_id = ?), 0) AS value FROM payments p WHERE p.appointment_id = ? AND p.payment_status = 'POSTED'")
+    .bind(appointmentId, appointmentId).first<{ value: number }>();
+  const actualPaidAmount = Number(actualPaid?.value ?? 0);
+  return json({ ok: true, id: paymentId, paymentId, paidAmount: actualPaidAmount, balance: Math.max(0, Number(appointment.totalAmount ?? 0) - actualPaidAmount) }, 201);
 };

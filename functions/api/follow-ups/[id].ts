@@ -10,6 +10,10 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const existing = await env.DB.prepare("SELECT * FROM follow_ups WHERE id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return notFound("Follow-up не найден");
+  if (user.role === "SPECIALIST") {
+    const ownEmployeeId = (await env.DB.prepare("SELECT id FROM employees WHERE user_id = ? AND is_active = 1 LIMIT 1").bind(user.id).first<{ id: string }>())?.id;
+    if (!ownEmployeeId || !existing.appointment_id || !await env.DB.prepare("SELECT id FROM appointments WHERE id = ? AND employee_id = ?").bind(existing.appointment_id, ownEmployeeId).first()) return forbidden("Специалист может изменять только свои follow-up");
+  }
   const body = await readJson(request);
   const status = stringValue(body, "status", String(existing.status ?? "OPEN")).toUpperCase();
   if (!["OPEN", "BOOKED", "DONE", "CANCELLED"].includes(status)) return badRequest("Некорректный статус follow-up");

@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useDeferredValue, useMemo, useState } from "react";
-import { CalendarDays, Check, Download, Plus, QrCode, ScanLine, Search } from "lucide-react";
+import { CalendarDays, Check, Download, Play, Plus, QrCode, ScanLine, Search, UserCheck, XCircle } from "lucide-react";
 
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { AuthHint, EmptyState, ErrorState, FormField, isAuthError, LoadingState, Modal } from "@/components/data-state";
@@ -89,6 +89,23 @@ export function AppointmentsView() {
       setFollowUpAppointment(null);
       dispatchCrmEvent("crm:data-changed");
       await reload();
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : "Не удалось завершить приём");
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  async function transitionAppointment(id: string, status: "CONFIRMED" | "ARRIVED" | "IN_PROGRESS" | "CANCELLED" | "NO_SHOW") {
+    if ((status === "CANCELLED" || status === "NO_SHOW") && !window.confirm(status === "NO_SHOW" ? "Отметить клиента как не пришедшего?" : "Отменить запись?")) return;
+    setUpdatingId(id);
+    setFormError(null);
+    try {
+      await apiFetch(`/api/appointments/${id}`, { method: "PATCH", body: { status, ...(status === "CANCELLED" || status === "NO_SHOW" ? { cancelReason: status === "NO_SHOW" ? "Клиент не пришёл" : "Отменено администратором" } : {}) } });
+      dispatchCrmEvent("crm:data-changed");
+      await reload();
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : "Не удалось изменить статус записи");
     } finally {
       setUpdatingId(null);
     }
@@ -187,6 +204,7 @@ export function AppointmentsView() {
           <div className="filter-spacer" />
           <span className="table-secondary">{deferredQuery ? `Результаты для «${deferredQuery}»` : "Последние записи"}</span>
         </div>
+        {formError ? <p className="form-error calendar-error">{formError}</p> : null}
 
         <SectionCard title="Расписание" subtitle="Создавайте и завершайте приёмы без ручной синхронизации" action={<span className="icon-button"><CalendarDays size={18} /></span>}>
           {items.length === 0 ? <EmptyState title="Записей пока нет" description="Добавьте первый приём — клиент автоматически появится в базе." action={<Button onClick={() => setModalOpen(true)}><Plus size={15} /> Добавить запись</Button>} /> : (
@@ -202,7 +220,7 @@ export function AppointmentsView() {
                     <td>{appointment.branchName ?? "Без филиала"}</td>
                     <td><StatusPill status={currentStatus} /></td>
                     <td><Amount value={Number(appointment.amount || 0)} /><span className="table-secondary">Оплачено {Number(appointment.paidAmount || 0).toLocaleString("ru-RU")} ₸</span></td>
-                    <td><div className="appointment-actions">{!["cancelled", "no_show"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus !== "completed" ? <button className="inline-action" onClick={() => { setFollowUpDays("30"); setFollowUpAppointment(appointment); }} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
+                    <td><div className="appointment-actions">{!["cancelled", "no_show", "completed"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus === "scheduled" ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "CONFIRMED")} disabled={updatingId === appointment.id} title="Подтвердить запись"><Check size={14} /> Подтвердить</button> : null}{["scheduled", "confirmed"].includes(currentStatus) ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "ARRIVED")} disabled={updatingId === appointment.id} title="Отметить пришедшим"><UserCheck size={14} /> Пришёл</button> : null}{currentStatus === "arrived" ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "IN_PROGRESS")} disabled={updatingId === appointment.id} title="Начать приём"><Play size={14} /> Начать</button> : null}{currentStatus === "in_progress" ? <button className="inline-action" onClick={() => { setFollowUpDays("30"); setFollowUpAppointment(appointment); }} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}<button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "CANCELLED")} disabled={updatingId === appointment.id} title="Отменить запись"><XCircle size={14} /> Отменить</button>{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
                   </tr>;
                 })}</tbody>
               </table>
@@ -214,7 +232,7 @@ export function AppointmentsView() {
       {modalOpen ? <Modal title="Новая запись" onClose={() => setModalOpen(false)} footer={<><Button variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button><button className="button button-primary" type="submit" form="appointment-form" disabled={saving}>{saving ? "Сохраняем…" : "Создать запись"}</button></>}>
         <form id="appointment-form" className="form-grid" onSubmit={createAppointment}>
           <FormField label="Дата и время"><input name="startsAt" type="datetime-local" required defaultValue={dateInputValue(new Date(Date.now() + 60 * 60 * 1000))} /></FormField>
-          <FormField label="Статус"><select name="status" defaultValue="SCHEDULED"><option value="SCHEDULED">Запланирован</option><option value="CONFIRMED">Подтверждён</option><option value="ARRIVED">Пришёл</option><option value="IN_PROGRESS">В работе</option></select></FormField>
+          <FormField label="Статус"><select name="status" defaultValue="SCHEDULED"><option value="SCHEDULED">Запланирован</option><option value="CONFIRMED">Подтверждён</option></select></FormField>
           <FormField label="Клиент"><select name="clientId" required defaultValue=""><option value="">Выберите клиента</option>{clients?.items.filter((client) => client.isActive !== 0).map((client) => <option key={client.id} value={client.id}>{client.fullName} · {client.phone}</option>)}</select></FormField>
           <FormField label="Услуга"><select name="serviceId" required defaultValue=""><option value="">Выберите услугу</option>{services?.items.filter((service) => service.isActive).map((service) => <option key={service.id} value={service.id}>{service.name} · {Number(service.price || 0).toLocaleString("ru-RU")} ₸</option>)}</select></FormField>
           <FormField label="Специалист"><select name="employeeId" required defaultValue=""><option value="">Выберите специалиста</option>{employees?.items.filter((employee) => employee.isActive).map((employee) => <option key={employee.id} value={employee.id}>{employee.fullName}{employee.branchName ? ` · ${employee.branchName}` : ""}</option>)}</select></FormField>

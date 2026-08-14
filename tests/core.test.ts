@@ -56,6 +56,9 @@ describe("permissions and status transitions", () => {
 
   it("does not reopen completed appointments", () => {
     expect(canTransitionAppointment("SCHEDULED", "CONFIRMED")).toBe(true);
+    expect(canTransitionAppointment("SCHEDULED", "IN_PROGRESS")).toBe(false);
+    expect(canTransitionAppointment("CONFIRMED", "IN_PROGRESS")).toBe(false);
+    expect(canTransitionAppointment("ARRIVED", "IN_PROGRESS")).toBe(true);
     expect(canTransitionAppointment("IN_PROGRESS", "COMPLETED")).toBe(true);
     expect(canTransitionAppointment("COMPLETED", "SCHEDULED")).toBe(false);
     expect(canTransitionAppointment("COMPLETED", "CANCELLED", true)).toBe(true);

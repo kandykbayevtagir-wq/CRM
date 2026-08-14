@@ -66,6 +66,20 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     auditStatement(env.DB, user, "appointment", appointmentId, "UPDATE", { status: previousStatus, startsAt: existing.starts_at, endsAt: existing.ends_at }, { status: requestedStatus, startsAt: incomingDate, endsAt: incomingEnds, cancelReason }),
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(appointmentId),
   ];
+  const shouldNotifyClient = previousStatus !== requestedStatus && ["COMPLETED", "CANCELLED", "NO_SHOW"].includes(requestedStatus);
+  const clientRecipient = shouldNotifyClient ? await env.DB.prepare(`
+    SELECT u.telegram_id AS telegramId, c.full_name AS clientName, e.full_name AS specialist, b.name AS branch,
+      (SELECT s.name FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id LIMIT 1) AS service
+    FROM appointments a INNER JOIN clients c ON c.id = a.client_id
+    INNER JOIN users u ON u.client_id = c.id AND u.active = 1 AND u.notifications_allowed = 1
+    LEFT JOIN employees e ON e.id = a.employee_id LEFT JOIN branches b ON b.id = a.branch_id
+    WHERE a.id = ? LIMIT 1
+  `).bind(appointmentId).first<{ telegramId: string; clientName: string; specialist: string | null; branch: string | null; service: string | null }>() : null;
+  if (clientRecipient) {
+    const startsAt = new Date(incomingDate);
+    statements.push(env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, ?, ?)")
+      .bind(newId(), `appointment:${appointmentId}:status:${requestedStatus}`, clientRecipient.telegramId, requestedStatus === "COMPLETED" ? "VISIT_COMPLETED" : "BOOKING_CANCELLED", JSON.stringify({ clientName: clientRecipient.clientName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(startsAt), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(startsAt), specialist: clientRecipient.specialist ?? "Специалист", service: clientRecipient.service ?? "Приём", branch: clientRecipient.branch ?? "Филиал", message: requestedStatus === "NO_SHOW" ? "Клиент не пришёл" : (cancelReason ?? "" ) })));
+  }
   const inventory = requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED"
     ? await prepareAppointmentConsumption(env.DB, appointmentId)
     : { statements: [] as D1PreparedStatement[], warnings: [] };
