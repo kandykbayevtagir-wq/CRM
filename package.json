@@ -7,7 +7,7 @@
     "build": "next build",
     "build:pages": "next build",
     "prebuild:pages": "npm run db:generate",
-    "deploy:pages": "npm run build:pages && npx wrangler pages deploy out --project-name podologymk-crm --commit-dirty=true",
+    "deploy:pages": "npm run build:pages && npx wrangler pages deploy out --project-name podologymk-crm --branch main --commit-dirty=true",
     "deploy:notifications": "npx wrangler deploy --config wrangler.notifications.jsonc",
     "db:migrate": "npx wrangler d1 migrations apply podologymk_crm --remote",
     "db:local": "npx wrangler d1 migrations apply podologymk_crm --local",
