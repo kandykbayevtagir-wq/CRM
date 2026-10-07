@@ -55,3 +55,27 @@ export async function requestContext(db: D1Database, path: string, method = "GET
   const context = { env, request, params, waitUntil(promise: Promise<unknown>) { background.push(promise); }, data: {}, next: async () => new Response("ok"), functionPath: path, passThroughOnException() {} };
   return { context: context as unknown as EventContext<CrmEnv,string,Record<string,unknown>>, background };
 }
+
+/** Extra staff roles for permission matrices (the base seed only has OWNER, SPECIALIST and two CLIENT users). */
+export function seedRoles(sqlite: DatabaseSync) {
+  sqlite.exec(`
+    INSERT INTO users(id,telegram_id,name,role,active,client_id,notifications_allowed) VALUES('admin','500','Администратор','ADMINISTRATOR',1,NULL,1),('accountant','600','Бухгалтер','ACCOUNTANT',1,NULL,1);
+  `);
+}
+
+/** Posted payment for an appointment; `paidAt` may be ISO or the legacy "YYYY-MM-DD HH:MM:SS" form. */
+export function seedPayment(sqlite: DatabaseSync, appointmentId: string, amount: number, paidAt: string, id = "payment-" + appointmentId) {
+  sqlite.prepare("INSERT INTO payments(id,appointment_id,amount,method,payment_status,paid_at,created_by) VALUES(?,?,?,'CASH','POSTED',?,'owner')").run(id, appointmentId, amount, paidAt);
+  sqlite.prepare("INSERT INTO financial_transactions(id,direction,kind,category,amount,status,occurred_at,appointment_id,payment_id,created_by) VALUES(?,'INCOME','PAYMENT','SERVICE',?,'POSTED',?,?,?,'owner')").run("ledger-" + id, amount, paidAt, appointmentId, id);
+  return id;
+}
+
+/** Runs the API middleware with a downstream handler so origin, session and allowlist checks are exercised together. */
+export async function middlewareContext(db: D1Database, path: string, init: { method?: string; headers?: Record<string, string>; body?: string; userId?: string | null; allowed?: string }) {
+  const headers: Record<string, string> = { ...(init.headers ?? {}) };
+  if (init.userId) headers.cookie = "pmk_session=" + await createSession(db, init.userId);
+  const env = { DB: db, TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "test-secret", MINI_APP_URL: "https://crm.test", CRM_OWNER_TELEGRAM_ID: "100", CRM_ALLOWED_TELEGRAM_IDS: init.allowed ?? "100,400" } as unknown as CrmEnv;
+  const request = new Request("https://crm.test" + path, { method: init.method ?? "GET", headers, ...(init.body ? { body: init.body } : {}) });
+  const context = { env, request, params: {}, waitUntil() {}, data: {}, next: async () => Response.json({ ok: true, reached: true }), functionPath: path, passThroughOnException() {} };
+  return context as unknown as EventContext<CrmEnv, string, Record<string, unknown>>;
+}
