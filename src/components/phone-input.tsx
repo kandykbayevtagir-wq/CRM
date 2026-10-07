@@ -41,7 +41,8 @@ export function PhoneInput({ value, defaultValue, onValueChange, id, name = "pho
     const raw = event.currentTarget.value;
     const oldCursor = event.currentTarget.selectionStart ?? raw.length;
     const digitsBefore = digitCountBefore(raw, oldCursor);
-    const next = formatKzPhone(raw);
+    // A bare prefix is an empty value: it must not satisfy `required` or be submitted as a phone.
+    const next = raw.replace(/\D/g, "") === "" || raw.replace(/\D/g, "") === "7" ? "" : formatKzPhone(raw);
     setDisplay(next);
     lastExternalValue.current = undefined;
     onValueChange?.(normalizePhone(raw));
@@ -62,12 +63,18 @@ export function PhoneInput({ value, defaultValue, onValueChange, id, name = "pho
       type="tel"
       inputMode="tel"
       autoComplete="tel"
+      pattern="\+7 \d{3} \d{3} \d{2} \d{2}"
+      title="Введите номер в формате +7 700 123 45 67"
       enterKeyHint={props.enterKeyHint ?? "next"}
       value={display}
       onChange={handleChange}
       onFocus={(event) => {
         if (!event.currentTarget.value) setDisplay("+7 ");
         props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget.value.replace(/\D/g, "").replace(/^7/, "") === "") setDisplay("");
+        props.onBlur?.(event);
       }}
     />
   );

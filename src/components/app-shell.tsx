@@ -12,7 +12,6 @@ import {
   CalendarClock,
   BarChart3,
   ChevronDown,
-  CircleHelp,
   ClipboardList,
   FileBarChart,
   LayoutDashboard,
@@ -38,6 +37,7 @@ import { ClientShell } from "@/components/client-shell";
 import { GlobalSearch } from "@/components/global-search";
 import { AuthHint, EmptyState, ErrorState, LoadingState, isAuthError } from "@/components/data-state";
 import { hasPermission, type Permission } from "@/lib/permissions";
+import { CurrentUserProvider } from "@/lib/current-user";
 
 const primaryNavigation = [
   { href: "/today", label: "Сегодня", icon: CalendarClock, permission: "appointments.manage_all" as Permission },
@@ -55,13 +55,13 @@ const financeNavigation = [
   { href: "/finance", label: "Финансы", icon: WalletCards, permission: "finance.read" as Permission },
   { href: "/payroll", label: "Зарплата", icon: Banknote, permission: "payroll.read" as Permission },
   { href: "/reports", label: "Отчёты", icon: FileBarChart, permission: "reports.read" as Permission },
-  { href: "/pnl", label: "P&L", icon: BarChart3, permission: "pnl.read" as Permission },
+  { href: "/pnl", label: "Прибыль и убытки", icon: BarChart3, permission: "pnl.read" as Permission },
   { href: "/kpi", label: "KPI команды", icon: Target, permission: "kpi.read" as Permission },
   { href: "/goals", label: "План / факт", icon: Target, permission: "goals.read" as Permission },
   { href: "/inventory", label: "Склад", icon: Package, permission: "inventory.read" as Permission },
   { href: "/purchases", label: "Закупки", icon: ShoppingCart, permission: "purchases.read" as Permission },
   { href: "/suppliers", label: "Поставщики", icon: ShoppingCart, permission: "inventory.read" as Permission },
-  { href: "/retention", label: "Retention", icon: UsersRound, permission: "retention.read" as Permission },
+  { href: "/retention", label: "Удержание клиентов", icon: UsersRound, permission: "retention.read" as Permission },
   { href: "/campaigns", label: "Кампании", icon: Megaphone, permission: "campaigns.read" as Permission },
 ];
 
@@ -139,7 +139,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const visibleFinance = user ? financeNavigation.filter((item) => hasPermission(user.role, item.permission)) : financeNavigation;
   const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
-  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/tasks": "Задачи", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/pnl": "P&L", "/kpi": "KPI команды", "/goals": "План / факт", "/inventory": "Склад", "/purchases": "Закупки", "/suppliers": "Поставщики", "/retention": "Retention", "/campaigns": "Кампании", "/settings": "Настройки" };
+  const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/tasks": "Задачи", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/pnl": "Прибыль и убытки", "/kpi": "KPI команды", "/goals": "План / факт", "/inventory": "Склад", "/purchases": "Закупки", "/suppliers": "Поставщики", "/retention": "Удержание клиентов", "/campaigns": "Кампании", "/settings": "Настройки" };
   const pageLabel = pathname === "/today" ? "Сегодня" : pageLabels[pathname] ?? pathname.slice(1);
 
   async function logout() {
@@ -172,15 +172,15 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
-  if (authLoading && !user) return <LoadingState label="Проверяем доступ через Telegram…" />;
-  if (authError && isAuthError(authError)) return <AuthHint />;
-  if (authError && !user) return <ErrorState message={authError} onRetry={reloadAuth} />;
-  if (!user || user.active === 0) return <AuthHint />;
+  if (authLoading && !user) return <main id="main-content" tabIndex={-1} className="auth-guard-screen"><LoadingState label="Проверяем доступ через Telegram…" /></main>;
+  if (authError && isAuthError(authError)) return <main id="main-content" tabIndex={-1} className="auth-guard-screen"><AuthHint /></main>;
+  if (authError && !user) return <main id="main-content" tabIndex={-1} className="auth-guard-screen"><ErrorState message={authError} onRetry={reloadAuth} /></main>;
+  if (!user || user.active === 0) return <main id="main-content" tabIndex={-1} className="auth-guard-screen"><AuthHint /></main>;
 
   const isClientRoute = pathname === "/" || pathname.startsWith("/client/");
   if (user.role === "CLIENT") {
     if (!isClientRoute) return <ClientShell user={user}><AccessDeniedState description="Этот экран доступен только сотрудникам центра." /></ClientShell>;
-    return <ClientShell user={user}>{children}</ClientShell>;
+    return <CurrentUserProvider user={user}><ClientShell user={user}>{children}</ClientShell></CurrentUserProvider>;
   }
   if (pathname.startsWith("/client/")) return <AccessDeniedState description="Личный кабинет клиента недоступен для сотрудников." />;
   const requiredPermission = permissionForPath(pathname);
@@ -221,7 +221,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (
-              <Link key={item.href} href={item.href} className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}>
+              <Link key={item.href} href={item.href} className={`nav-item ${active ? "nav-item-active" : ""}`} aria-current={active ? "page" : undefined} onClick={() => setMobileOpen(false)}>
                 <Icon size={18} strokeWidth={active ? 2.2 : 1.8} />
                 <span>{item.label}</span>
               </Link>
@@ -233,7 +233,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (
-              <Link key={item.href} href={item.href} className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}>
+              <Link key={item.href} href={item.href} className={`nav-item ${active ? "nav-item-active" : ""}`} aria-current={active ? "page" : undefined} onClick={() => setMobileOpen(false)}>
                 <Icon size={18} strokeWidth={active ? 2.2 : 1.8} />
                 <span>{item.label}</span>
               </Link>
@@ -242,14 +242,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="sidebar-bottom">
-          {(!user || hasPermission(user.role, "settings.read")) ? <Link href="/settings" className={`nav-item ${pathname === "/settings" ? "nav-item-active" : ""}`} onClick={() => setMobileOpen(false)}><Settings size={18} strokeWidth={1.8} /><span>Настройки</span></Link> : null}
-          <div className="help-card">
-            <div className="help-icon"><CircleHelp size={17} /></div>
-            <div>
-              <strong>Рабочая версия CRM</strong>
-              <span>Данные синхронизируются с облаком</span>
-            </div>
-          </div>
+          {(!user || hasPermission(user.role, "settings.read")) ? <Link href="/settings" className={`nav-item ${pathname === "/settings" ? "nav-item-active" : ""}`} aria-current={pathname === "/settings" ? "page" : undefined} onClick={() => setMobileOpen(false)}><Settings size={18} strokeWidth={1.8} /><span>Настройки</span></Link> : null}
           <div className="sidebar-user">
             <span className="user-avatar">{initials}</span>
             <span className="user-copy">
@@ -272,7 +265,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
             {openPanel === "notifications" ? <div className="topbar-popover notifications-popover">
               <div className="popover-heading"><div><span className="eyebrow">Центр событий</span><strong>Уведомления</strong></div><div className="popover-heading-actions">{notifications?.unreadCount ? <button className="notification-mark-all" onClick={() => void markAllNotificationsRead()}>Прочитать всё</button> : null}<button className="popover-refresh" onClick={() => void reloadNotifications()} aria-label="Обновить уведомления"><RefreshCw size={15} /></button></div></div>
-              {notificationsLoading ? <div className="popover-empty"><RefreshCw size={20} className="spin" /><strong>Загружаю события</strong><span>Проверяю записи, оплаты и изменения.</span></div> : notificationsError ? <div className="popover-empty"><Bell size={20} /><strong>Не удалось загрузить уведомления</strong><span>{notificationsError}</span><button className="button button-secondary" onClick={() => void reloadNotifications()}>Повторить</button></div> : !notifications?.items.length ? <div className="popover-empty"><Bell size={20} /><strong>Пока всё спокойно</strong><span>Новые записи, оплаты и изменения появятся здесь.</span></div> : <div className="notification-list">{notifications.items.map((item) => {
+              {notificationsLoading ? <div className="popover-empty"><RefreshCw size={20} className="spin" /><strong>Загружаем события</strong><span>Проверяем записи, оплаты и изменения.</span></div> : notificationsError ? <div className="popover-empty"><Bell size={20} /><strong>Не удалось загрузить уведомления</strong><span>{notificationsError}</span><button className="button button-secondary" onClick={() => void reloadNotifications()}>Повторить</button></div> : !notifications?.items.length ? <div className="popover-empty"><Bell size={20} /><strong>Пока всё спокойно</strong><span>Новые записи, оплаты и изменения появятся здесь.</span></div> : <div className="notification-list">{notifications.items.map((item) => {
                 const content = <><span className={`notification-item-icon notification-kind-${item.kind.toLowerCase()}`}><Bell size={14} /></span><span className="notification-item-copy"><strong>{item.title}</strong><span>{item.description}</span><small>{formatShellDate(item.occurredAt)}</small></span>{!item.read ? <i className="notification-unread" /> : null}</>;
                 const onNotificationClick = () => { if (!item.read) void markNotificationRead(item.id); setOpenPanel(null); };
                 return item.href ? <Link href={item.href} key={item.id} className="notification-item" onClick={onNotificationClick}>{content}</Link> : <button type="button" key={item.id} className="notification-item notification-item-button" onClick={onNotificationClick}>{content}</button>;
@@ -287,7 +280,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               {user ? <>
                 <div className="profile-popover-header"><span className="profile-popover-avatar">{initials}</span><div><strong>{user.name}</strong><span>{role}</span></div></div>
                 <div className="profile-facts"><div><span>Telegram ID</span><strong>{user.telegramId}</strong></div><div><span>Username</span><strong>{user.telegramUsername || user.username ? `@${user.telegramUsername || user.username}` : "Не указан"}</strong></div><div><span>Телефон</span><strong>{user.phone || "Не указан"}</strong></div><div><span>Последний вход</span><strong>{formatShellDate(user.lastLoginAt)}</strong></div></div>
-                <div className="profile-status"><span className="cloud-status-dot" /><span>Доступ активен · данные загружены по Telegram ID</span></div>
+                <div className="profile-status"><span className="cloud-status-dot" /><span>Вход выполнен через Telegram</span></div>
                 <div className="profile-popover-actions">{hasPermission(user.role, "settings.read") ? <Link href="/settings" className="button button-secondary" onClick={() => setOpenPanel(null)}><Settings size={14} /> Настройки</Link> : null}<button className="button button-ghost" onClick={() => void logout()}>Выйти</button></div>
               </> : <>
                 <div className="profile-popover-header"><span className="profile-popover-avatar">—</span><div><strong>Профиль Telegram</strong><span>Авторизация не завершена</span></div></div>
@@ -298,7 +291,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div> : null}
           </div>
         </header>
-        <main id="main-content" tabIndex={-1} className="content-area page-transition">{children}</main>
+        <main id="main-content" tabIndex={-1} className="content-area page-transition"><CurrentUserProvider user={user}>{children}</CurrentUserProvider></main>
       </div>
     </div>
   );

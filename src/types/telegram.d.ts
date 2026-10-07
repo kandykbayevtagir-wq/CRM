@@ -33,6 +33,10 @@ declare global {
       selectionChanged?: () => void;
     };
     requestFullscreen?: () => void;
+    platform?: string;
+    version?: string;
+    showAlert?: (message: string, callback?: () => void) => void;
+    showConfirm?: (message: string, callback?: (confirmed: boolean) => void) => void;
     isVersionAtLeast?: (version: string) => boolean;
     requestWriteAccess?: (callback?: (allowed: boolean) => void) => void;
     showScanQrPopup?: (params?: { text?: string }, callback?: (text: string) => boolean) => void;

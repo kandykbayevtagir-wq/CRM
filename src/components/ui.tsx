@@ -37,7 +37,7 @@ export function Button({
   ...props
 }: {
   children: ReactNode;
-  variant?: "primary" | "secondary" | "ghost";
+  variant?: "primary" | "secondary" | "ghost" | "danger";
   type?: "button" | "submit" | "reset";
   onClick?: () => void;
   disabled?: boolean;
@@ -146,15 +146,4 @@ export function Amount({ value, muted = false }: { value: number; muted?: boolea
 
 export function Avatar({ initials, tone = "violet" }: { initials: string; tone?: string }) {
   return <span className={`avatar avatar-${tone}`}>{initials}</span>;
-}
-
-export function FilterSelect({ label, value }: { label: string; value: string }) {
-  return (
-    <label className="filter-select">
-      <span>{label}</span>
-      <select defaultValue={value} aria-label={label}>
-        <option>{value}</option>
-      </select>
-    </label>
-  );
 }

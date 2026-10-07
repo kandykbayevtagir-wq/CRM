@@ -38,43 +38,51 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
   );
 }
 
-export function Modal({ title, children, footer, onClose }: { title: string; children: ReactNode; footer?: ReactNode; onClose: () => void }) {
+/**
+ * Native <dialog>.showModal() provides the top layer, focus containment and Escape handling.
+ * `busy` keeps the dialog open while a request is in flight so a double tap cannot dismiss it.
+ */
+export function Modal({ title, children, footer, onClose, busy = false }: { title: string; children: ReactNode; footer?: ReactNode; onClose: () => void; busy?: boolean }) {
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef(onClose);
-  useEffect(() => { closeRef.current = onClose; }, [onClose]);
+  const busyRef = useRef(busy);
+  useEffect(() => { closeRef.current = onClose; busyRef.current = busy; }, [onClose, busy]);
   useEffect(() => {
     const previousActive = document.activeElement as HTMLElement | null;
     const panel = panelRef.current;
     const dialog = dialogRef.current;
-    dialog?.showModal();
+    if (dialog && !dialog.open) dialog.showModal();
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const focusable = () => panel ? Array.from(panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled")) : [];
-    (panel?.querySelector<HTMLElement>("[autofocus]") ?? focusable().find((element) => element.matches("input, select, textarea")) ?? focusable()[0])?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); closeRef.current(); return; }
-      if (event.key !== "Tab") return;
-      const elements = focusable();
-      if (!elements.length) return;
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => { document.removeEventListener("keydown", onKeyDown); dialog?.close(); document.body.style.overflow = overflow; previousActive?.focus(); };
+    const focusable = panel ? Array.from(panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled")) : [];
+    (focusable.find((element) => element.matches("input, select, textarea")) ?? focusable[0])?.focus();
+    return () => { if (dialog?.open) dialog.close(); document.body.style.overflow = overflow; previousActive?.focus(); };
   }, []);
   if (typeof document === "undefined") return null;
+  const requestClose = () => { if (!busyRef.current) closeRef.current(); };
   return createPortal(
-    <dialog ref={dialogRef} className="crm-dialog" onCancel={(event) => { event.preventDefault(); closeRef.current(); }} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={panelRef} className="modal-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <div className="modal-heading"><div><p className="eyebrow">podologymk</p><h2 id={titleId}>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Закрыть">×</button></div>
+    <dialog ref={dialogRef} className="crm-dialog" aria-labelledby={titleId} aria-busy={busy || undefined} onCancel={(event) => { event.preventDefault(); requestClose(); }} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+      <section ref={panelRef} className="modal-panel">
+        <div className="modal-heading"><div><p className="eyebrow">podologymk</p><h2 id={titleId}>{title}</h2></div><button type="button" className="modal-close" onClick={requestClose} disabled={busy} aria-label="Закрыть">×</button></div>
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-footer">{footer}</div> : null}
       </section>
     </dialog>, document.body
+  );
+}
+
+/** Replacement for window.confirm(): Telegram WebViews suppress native dialogs, so confirmations render in-app. */
+export function ConfirmDialog({ title, description, confirmLabel = "Подтвердить", cancelLabel = "Отмена", danger = false, pending = false, error, onConfirm, onClose, children }: {
+  title: string; description?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; pending?: boolean; error?: string | null; onConfirm: () => void; onClose: () => void; children?: ReactNode;
+}) {
+  return (
+    <Modal title={title} onClose={onClose} busy={pending} footer={<><Button variant="secondary" onClick={onClose} disabled={pending}>{cancelLabel}</Button><Button variant={danger ? "danger" : "primary"} onClick={onConfirm} loading={pending}>{confirmLabel}</Button></>}>
+      {description ? <p className="modal-intro">{description}</p> : null}
+      {children}
+      {error ? <InlineError>{error}</InlineError> : null}
+    </Modal>
   );
 }
 

@@ -14,9 +14,8 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ru">
-      <body><a className="skip-link" href="#main-content">К содержимому</a><NetworkStatus />{children}</body>
+      <body><a className="skip-link" href="#main-content">К содержимому</a><NetworkStatus />{children}<TelegramMiniApp /></body>
       <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
-      <TelegramMiniApp />
     </html>
   );
 }
