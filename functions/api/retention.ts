@@ -68,10 +68,18 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!hasCrmPermission(user, "retention.write")) return forbidden();
   if (user.role === "SPECIALIST") return forbidden("Изменение сегментов доступно администратору");
   const body = await readJson(request);
-  const name = stringValue(body, "name");
-  const criteria = body.criteria && typeof body.criteria === "object" ? body.criteria : {};
+  const name = stringValue(body, "name").slice(0, 200);
+  const raw = body.criteria && typeof body.criteria === "object" && !Array.isArray(body.criteria) ? body.criteria as Record<string, unknown> : {};
+  // Only the three supported numeric rules are persisted; anything else is ignored.
+  const criteria: Record<string, number> = {};
+  for (const key of ["minVisits", "maxDaysSinceVisit", "minRevenue"] as const) {
+    if (raw[key] === undefined || raw[key] === null || raw[key] === "") continue;
+    const value = Number(raw[key]);
+    if (!Number.isFinite(value) || value < 0) return badRequest(`Некорректное значение правила ${key}`);
+    criteria[key] = value;
+  }
   if (!name) return badRequest("Название сегмента обязательно");
   const id = newId();
-  await env.DB.prepare("INSERT INTO client_segments (id, name, description, criteria_json, created_by) VALUES (?, ?, ?, ?, ?)").bind(id, name, optionalString(body, "description"), JSON.stringify(criteria), user.id).run();
+  await env.DB.prepare("INSERT INTO client_segments (id, name, description, criteria_json, created_by) VALUES (?, ?, ?, ?, ?)").bind(id, name, optionalString(body, "description", 500), JSON.stringify(criteria), user.id).run();
   return json({ ok: true, id }, 201);
 };

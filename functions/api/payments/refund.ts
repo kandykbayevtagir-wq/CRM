@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, conflict, dateValue, json, newId, readJson, stringValue } from "../../_lib/http";
+import { badRequest, conflict, json, newId, notFound, readJson, stringValue } from "../../_lib/http";
+import { organizationTimezone, zonedDateValue } from "../../_lib/dates";
 import { nonNegativeNumber } from "../../_lib/validation";
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
@@ -10,7 +11,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const body = await readJson(request);
   const paymentId = stringValue(body, "paymentId");
   const amount = nonNegativeNumber(body.amount, "Сумма возврата");
-  const reason = stringValue(body, "reason");
+  const reason = stringValue(body, "reason").slice(0, 500);
   const idempotencyKey = stringValue(body, "idempotencyKey") || newId();
   if (!paymentId || amount === null || amount <= 0 || !reason) return badRequest("Укажите платёж, положительную сумму и причину возврата");
   if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return badRequest("Сумма должна содержать не более двух знаков после запятой");
@@ -21,11 +22,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (previousAdjustment && previousAdjustment.requestHash !== requestHash) return conflict("Этот ключ уже использован для другого возврата");
   if (previousAdjustment) return json({ ok: true, id: previousAdjustment.adjustmentId, replayed: true });
   const payment = await env.DB.prepare("SELECT p.id, p.amount, p.appointment_id AS appointmentId, a.branch_id AS branchId, p.payment_status AS status FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE p.id = ?").bind(paymentId).first<{ id: string; amount: number; appointmentId: string; branchId: string; status: string }>();
-  if (!payment || payment.status !== "POSTED") return badRequest("Платёж не найден или уже закрыт");
+  if (!payment) return notFound("Платёж не найден");
+  if (payment.status !== "POSTED") return badRequest("Платёж уже закрыт");
   const refunded = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS value FROM payment_adjustments WHERE payment_id = ?").bind(paymentId).first<{ value: number }>();
   const available = Number(payment.amount ?? 0) - Number(refunded?.value ?? 0);
   if (amount > available + 0.005) return conflict(`Нельзя вернуть больше доступной суммы: ${Math.max(0, available).toFixed(2)} ₸`);
-  const occurredAt = dateValue(body, "occurredAt") || new Date().toISOString();
+  const occurredAt = zonedDateValue(body, "occurredAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   const adjustmentId = newId();
   try {
     const results = await env.DB.batch([

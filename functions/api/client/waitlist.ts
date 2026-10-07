@@ -1,3 +1,4 @@
+import { getActiveClientId } from "../../_lib/access";
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, newId, optionalString, readJson } from "../../_lib/http";
@@ -20,6 +21,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!isClient(user)) return forbidden();
   if (!user.clientId) return badRequest("Сначала заполните профиль");
+  if (!await getActiveClientId(env.DB, user)) return forbidden("Карточка клиента архивирована. Обратитесь к администратору центра.");
   const body = await readJson(request);
   const serviceId = optionalString(body, "serviceId");
   const branchId = optionalString(body, "branchId");

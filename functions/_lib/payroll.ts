@@ -1,4 +1,6 @@
+import Decimal from "decimal.js";
 import { calculatePayroll } from "../../src/lib/finance/payroll";
+import { inRange } from "./dates";
 import { auditStatement } from "./audit";
 import type { AuthUser } from "./auth";
 import { newId } from "./http";
@@ -24,11 +26,11 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
       SELECT COALESCE(SUM(p.amount), 0) - COALESCE((
         SELECT SUM(pa.amount) FROM payment_adjustments pa INNER JOIN payments rp ON rp.id = pa.payment_id
         WHERE rp.appointment_id IN (SELECT id FROM appointments WHERE employee_id = ? AND status = 'COMPLETED')
-          AND pa.occurred_at >= ? AND pa.occurred_at < ?
+          AND ${inRange("pa.occurred_at")}
       ), 0) AS value
       FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id
       WHERE a.employee_id = ? AND a.status = 'COMPLETED' AND p.payment_status = 'POSTED'
-        AND p.paid_at >= ? AND p.paid_at < ?
+        AND ${inRange("p.paid_at")}
     `).bind(employee.id, period.periodStart, period.periodEnd, employee.id, period.periodStart, period.periodEnd).first<{ value: number }>();
     const paymentDetails = await db.prepare(`
       SELECT p.id AS paymentId, p.appointment_id AS appointmentId, p.paid_at AS paidAt,
@@ -38,8 +40,8 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
       INNER JOIN appointments a ON a.id = p.appointment_id
       INNER JOIN clients c ON c.id = a.client_id
       WHERE a.employee_id = ? AND a.status = 'COMPLETED' AND p.payment_status = 'POSTED'
-        AND p.paid_at >= ? AND p.paid_at < ?
-      ORDER BY p.paid_at ASC
+        AND ${inRange("p.paid_at")}
+      ORDER BY julianday(p.paid_at) ASC
     `).bind(employee.id, period.periodStart, period.periodEnd).all<PaymentDetailRow>();
     const employeeAdjustments = adjustmentRows.filter((row) => row.employeeId === employee.id);
     const bonusAmount = employeeAdjustments.filter((row) => row.kind === "BONUS").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
@@ -55,7 +57,8 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
       periodEnd: period.periodEnd,
     } });
   }
-  const total = lines.reduce((sum, line) => sum + Number(line.calculation.totalAmount), 0);
+  // Decimal sum: payroll totals must not drift through floating point.
+  const total = Number(lines.reduce((sum, line) => sum.plus(line.calculation.totalAmount), new Decimal(0)).toFixed(2));
   const statements: D1PreparedStatement[] = [
     ...assertUnchanged(db, "payroll_periods", periodId, period.revision),
     db.prepare("DELETE FROM payroll_lines WHERE period_id = ?").bind(periodId),
@@ -81,12 +84,17 @@ export async function closePayrollPeriod(db: D1Database, periodId: string, actor
   if (!period) throw new HttpError(404, "PAYROLL_NOT_FOUND", "Расчётный период не найден");
   if (period.status === "CLOSED") return { periodId, status: "CLOSED", totalAmount: Number(period.totalAmount ?? 0) };
   if (period.status !== "CALCULATED") throw new HttpError(409, "PAYROLL_NOT_CALCULATED", "Сначала рассчитайте период");
+  const totalAmount = Number(period.totalAmount ?? 0);
+  // A negative fund cannot be posted to the ledger (amount >= 0); surface it instead of silently skipping the row.
+  if (totalAmount < 0) throw new HttpError(409, "PAYROLL_NEGATIVE", "Итог периода отрицательный: уменьшите удержания или авансы перед закрытием");
   const ledgerId = period.ledgerId ?? `payroll-${periodId}`;
+  // The salary expense belongs to the period itself: post it at the last instant of the period, not at the exclusive end.
+  const occurredAt = new Date(Math.max(Date.parse(period.periodEnd) - 1000, 0)).toISOString();
   await db.batch([
     ...assertUnchanged(db, "payroll_periods", periodId, period.revision),
     db.prepare("UPDATE payroll_periods SET status = 'CLOSED', revision = revision + 1, closed_at = CURRENT_TIMESTAMP, closed_by = ?, ledger_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'CALCULATED'").bind(actor.id, ledgerId, periodId),
-    db.prepare("INSERT OR IGNORE INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, payroll_period_id, description, created_by) VALUES (?, 'EXPENSE', 'SALARY', 'SALARY', ?, 'POSTED', ?, ?, 'Закрытый расчёт зарплаты', ?)").bind(ledgerId, Number(period.totalAmount ?? 0), period.periodEnd, periodId, actor.id),
+    db.prepare("INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, payroll_period_id, description, created_by) SELECT ?, 'EXPENSE', 'SALARY', 'SALARY', ?, 'POSTED', ?, ?, 'Закрытый расчёт зарплаты', ? WHERE NOT EXISTS (SELECT 1 FROM financial_transactions WHERE id = ?)").bind(ledgerId, totalAmount, occurredAt, periodId, actor.id, ledgerId),
     auditStatement(db, actor, "payroll_period", periodId, "CLOSE", { status: "CALCULATED", totalAmount: period.totalAmount }, { status: "CLOSED", totalAmount: period.totalAmount }),
   ]);
-  return { periodId, status: "CLOSED", totalAmount: Number(period.totalAmount ?? 0) };
+  return { periodId, status: "CLOSED", totalAmount };
 }

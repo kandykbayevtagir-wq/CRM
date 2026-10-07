@@ -1,7 +1,8 @@
 import { getSessionUser, forbidden, hasCrmPermission, unauthorized } from "../_lib/auth";
 import { auditStatement } from "../_lib/audit";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, json, newId, readJson, stringValue } from "../_lib/http";
+import { badRequest, json, newId, notFound, readJson, stringValue } from "../_lib/http";
+import { isoColumn } from "../_lib/dates";
 import { localDate, localDayRange } from "../../src/lib/appointments/schedule";
 import { processOutbox } from "../_lib/notification-delivery";
 
@@ -18,7 +19,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const { from, to } = localDayRange(date, timezone);
   const branchId = params.get("branchId") || "";
   const [appointments, queue, failures, worker, obligations, waitlist] = await Promise.all([
-    env.DB.prepare(`SELECT a.id, a.revision, a.starts_at AS startsAt, a.ends_at AS endsAt, a.status, a.total_amount AS amount,
+    env.DB.prepare(`SELECT a.id, a.revision, ${isoColumn("a.starts_at")} AS startsAt, ${isoColumn("a.ends_at")} AS endsAt, a.status, a.total_amount AS amount,
       a.client_id AS clientId, c.full_name AS clientName, c.phone AS clientPhone, e.full_name AS employeeName, b.name AS branchName,
       (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName,
       COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.appointment_id = a.id AND p.payment_status = 'POSTED'),0) -
@@ -26,7 +27,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
       FROM appointments a JOIN clients c ON c.id = a.client_id
       LEFT JOIN employees e ON e.id = a.employee_id LEFT JOIN branches b ON b.id = a.branch_id
       WHERE julianday(a.starts_at) >= julianday(?) AND julianday(a.starts_at) < julianday(?) ${branchId ? "AND a.branch_id = ?" : ""}
-      ORDER BY a.starts_at LIMIT 200`).bind(from, to, ...(branchId ? [branchId] : [])).all(),
+      ORDER BY julianday(a.starts_at) LIMIT 200`).bind(from, to, ...(branchId ? [branchId] : [])).all(),
     env.DB.prepare("SELECT status, COUNT(*) AS count FROM message_outbox WHERE status IN ('PENDING','PROCESSING','FAILED') GROUP BY status").all(),
     env.DB.prepare("SELECT id, template_key AS kind, attempts, last_error AS errorCode, updated_at AS updatedAt FROM message_outbox WHERE status = 'FAILED' ORDER BY updated_at DESC LIMIT 20").all(),
     env.DB.prepare("SELECT status, started_at AS startedAt, completed_at AS completedAt, error_code AS errorCode FROM worker_runs WHERE worker_name = 'notifications'").first<{ status: string; completedAt: string | null }>(),
@@ -53,7 +54,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   if (stringValue(body, "action") === "close_waitlist") {
     const id = stringValue(body, "waitlistId");
     const row = await env.DB.prepare("SELECT status FROM client_waitlist WHERE id = ?").bind(id).first<{status:string}>();
-    if (!row) return badRequest("Заявка не найдена");
+    if (!row) return notFound("Заявка не найдена");
     if (!["ACTIVE","OFFERED"].includes(row.status)) return json({ok:true,replayed:true});
     const guardId = newId();
     await env.DB.batch([
@@ -66,7 +67,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   }
   const id = stringValue(body, "messageId");
   const row = await env.DB.prepare("SELECT event_key AS eventKey FROM message_outbox WHERE id = ? AND status = 'FAILED'").bind(id).first<{ eventKey: string }>();
-  if (!row) return badRequest("Сообщение уже обработано или не найдено");
+  if (!row) return notFound("Сообщение уже обработано или не найдено");
   const guardId = newId();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO mutation_guards(id, passed) SELECT ?, EXISTS(SELECT 1 FROM message_outbox WHERE id = ? AND status = 'FAILED')").bind(guardId, id),

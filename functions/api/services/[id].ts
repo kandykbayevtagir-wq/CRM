@@ -12,12 +12,13 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const price = numberValue(body, "price", Number(existing.price ?? 0));
   const durationMinutes = numberValue(body, "durationMinutes", Number(existing.duration_minutes ?? 60));
   const cost = numberValue(body, "cost", Number(existing.cost ?? 0));
-  if (price < 0 || cost < 0 || durationMinutes < 15 || durationMinutes > 720) return json({ ok: false, error: "Проверьте стоимость и длительность услуги" }, 400);
+  const name = (stringValue(body, "name", String(existing.name ?? "")) || String(existing.name ?? "")).slice(0, 200);
+  if (!name || price < 0 || cost < 0 || durationMinutes < 15 || durationMinutes > 720) return json({ ok: false, error: "Проверьте название, стоимость и длительность услуги" }, 400);
   await env.DB.prepare(`
     UPDATE services SET name = ?, category = ?, price = ?, duration_minutes = ?, cost = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
   `).bind(
-    stringValue(body, "name", String(existing.name ?? "")),
-    stringValue(body, "category", String(existing.category ?? "Подология")),
+    name,
+    (stringValue(body, "category", String(existing.category ?? "Подология")) || "Подология").slice(0, 100),
     price,
     Math.max(15, durationMinutes),
     cost,

@@ -2,6 +2,7 @@ import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/au
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json } from "../../_lib/http";
 import { findAvailableSlots } from "../../_lib/availability";
+import { HttpError } from "../../_lib/security";
 
 function nextDate(value: string, offset: number) {
   const date = new Date(`${value}T12:00:00.000Z`);
@@ -29,6 +30,8 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     }
     return json({ ok: true, items: slots, next: null });
   } catch (cause) {
-    return badRequest(cause instanceof Error ? cause.message : "Не удалось рассчитать свободные окна");
+    // Only validation errors are shown to the client; anything else is an internal failure.
+    if (cause instanceof HttpError) return badRequest(cause.message);
+    throw cause;
   }
 };

@@ -3,7 +3,8 @@ import type { CrmEnv } from "../_lib/env";
 import { isStaffTelegramAllowed } from "../../src/lib/auth/bootstrap";
 import { HttpError, errorResponse, validateRequestOrigin } from "../_lib/security";
 
-const publicPaths = new Set(["/api/health", "/api/telegram/health", "/api/telegram/auth", "/api/telegram/webhook"]);
+// Logout must work without a valid session so a stale or revoked cookie can always be cleared.
+const publicPaths = new Set(["/api/health", "/api/telegram/health", "/api/telegram/auth", "/api/telegram/webhook", "/api/auth/logout"]);
 
 export const onRequest: PagesFunction<CrmEnv> = async (context) => {
   const { request, env } = context;
@@ -18,7 +19,7 @@ export const onRequest: PagesFunction<CrmEnv> = async (context) => {
       const user = await getSessionUser(request, env.DB);
       userId = user?.id ?? null;
       if (!user) response = unauthorized();
-      else if (!isStaffTelegramAllowed(user.role, user.telegramId, (env.CRM_ALLOWED_TELEGRAM_IDS || "").split(",").map((id) => id.trim()), env.CRM_OWNER_TELEGRAM_ID || "")) response = forbidden();
+      else if (!isStaffTelegramAllowed(user.role, user.telegramId, (env.CRM_ALLOWED_TELEGRAM_IDS || "").split(",").map((id) => id.trim()).filter(Boolean), env.CRM_OWNER_TELEGRAM_ID || "")) response = forbidden();
       else response = await context.next();
     } else {
       if (path === "/api/telegram/auth" && request.method === "POST") {

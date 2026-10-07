@@ -44,11 +44,23 @@ export function stringValue(body: JsonRecord, key: string, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
-export function optionalString(body: JsonRecord, key: string) {
+export function optionalString(body: JsonRecord, key: string, maxLength = 2000) {
   const value = body[key];
   if (value === null || value === undefined) return null;
-  return typeof value === "string" ? value.trim() : null;
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : null;
 }
+
+/** Trimmed string limited to `maxLength` characters; longer input is cut, never rejected. */
+export function boundedString(body: JsonRecord, key: string, maxLength: number, fallback = "") {
+  return stringValue(body, key, fallback).slice(0, maxLength);
+}
+
+/** Escapes LIKE wildcards so user input matches literally; use with `LIKE ? ESCAPE '\\'`. */
+export function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+export const LIKE_ESCAPE = "ESCAPE '\\'";
 
 export function numberValue(body: JsonRecord, key: string, fallback = 0) {
   const value = body[key];

@@ -2,7 +2,8 @@ import Decimal from "decimal.js";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import { inventorySummary, stockBalanceExpression } from "../../_lib/inventory";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, conflict, dateValue, json, newId, optionalString, readJson, stringValue } from "../../_lib/http";
+import { badRequest, conflict, json, newId, optionalString, readJson, stringValue } from "../../_lib/http";
+import { isoColumn, normalizeIso, organizationTimezone, zonedDateValue } from "../../_lib/dates";
 import { nonNegativeNumber } from "../../_lib/validation";
 
 // Purchase receipts, service consumption and corrections have dedicated domain
@@ -19,9 +20,10 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const bindings: string[] = [];
   if (params.get("branchId")) { filters.push("sm.branch_id = ?"); bindings.push(params.get("branchId") as string); }
   if (params.get("productId")) { filters.push("sm.product_id = ?"); bindings.push(params.get("productId") as string); }
-  if (params.get("from")) { filters.push("sm.occurred_at >= ?"); bindings.push(params.get("from") as string); }
-  if (params.get("to")) { filters.push("sm.occurred_at <= ?"); bindings.push(params.get("to") as string); }
-  const rows = await env.DB.prepare(`SELECT sm.id, sm.product_id AS productId, p.name AS productName, p.sku, sm.branch_id AS branchId, b.name AS branchName, sm.movement_type AS movementType, sm.direction, sm.quantity, sm.unit_price AS unitPrice, sm.total_cost AS totalCost, sm.occurred_at AS occurredAt, sm.source, sm.appointment_id AS appointmentId, sm.purchase_id AS purchaseId, sm.comment, u.name AS userName FROM stock_movements sm INNER JOIN products p ON p.id = sm.product_id LEFT JOIN branches b ON b.id = sm.branch_id LEFT JOIN users u ON u.id = sm.user_id WHERE ${filters.join(" AND ")} ORDER BY sm.occurred_at DESC LIMIT 500`).bind(...bindings).all();
+  const from = normalizeIso(params.get("from") ?? ""); const to = normalizeIso(params.get("to") ?? "");
+  if (from) { filters.push("julianday(sm.occurred_at) >= julianday(?)"); bindings.push(from); }
+  if (to) { filters.push("julianday(sm.occurred_at) <= julianday(?)"); bindings.push(to); }
+  const rows = await env.DB.prepare(`SELECT sm.id, sm.product_id AS productId, p.name AS productName, p.sku, sm.branch_id AS branchId, b.name AS branchName, sm.movement_type AS movementType, sm.direction, sm.quantity, sm.unit_price AS unitPrice, sm.total_cost AS totalCost, ${isoColumn("sm.occurred_at")} AS occurredAt, sm.source, sm.appointment_id AS appointmentId, sm.purchase_id AS purchaseId, sm.comment, u.name AS userName FROM stock_movements sm INNER JOIN products p ON p.id = sm.product_id LEFT JOIN branches b ON b.id = sm.branch_id LEFT JOIN users u ON u.id = sm.user_id WHERE ${filters.join(" AND ")} ORDER BY julianday(sm.occurred_at) DESC LIMIT 500`).bind(...bindings).all();
   return json({ ok: true, items: rows.results ?? [] });
 };
 
@@ -53,7 +55,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
       env.DB.prepare(`INSERT INTO stock_movements (id, product_id, branch_id, movement_type, direction, quantity, unit_price, total_cost, occurred_at, user_id, source, idempotency_key, comment)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         WHERE ? = 'IN' OR ? <= (SELECT ${stockBalanceExpression("available_sm")} FROM stock_movements available_sm WHERE available_sm.product_id = ? AND available_sm.branch_id = ?)`)
-        .bind(id, productId, branchId, movementType, direction, quantity, unitPrice, totalCost, dateValue(body, "occurredAt") || new Date().toISOString(), user.id, "MANUAL", idempotencyKey, optionalString(body, "comment"), direction, quantity, productId, branchId),
+        .bind(id, productId, branchId, movementType, direction, quantity, unitPrice, totalCost, zonedDateValue(body, "occurredAt", await organizationTimezone(env.DB)) || new Date().toISOString(), user.id, "MANUAL", idempotencyKey.slice(0, 128), optionalString(body, "comment", 500), direction, quantity, productId, branchId),
       env.DB.prepare(`INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, before_json, after_json)
         SELECT ?, ?, 'stock_movement', ?, 'CREATE', NULL, ?
         WHERE EXISTS (SELECT 1 FROM stock_movements WHERE id = ?)`)

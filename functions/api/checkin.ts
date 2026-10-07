@@ -2,7 +2,7 @@ import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_l
 import { getOwnEmployeeId } from "../_lib/access";
 import type { CrmEnv } from "../_lib/env";
 import { assertUnchanged } from "../_lib/transaction";
-import { badRequest, json, newCheckInToken, newId, readJson, stringValue } from "../_lib/http";
+import { badRequest, json, newCheckInToken, newId, notFound, readJson, stringValue } from "../_lib/http";
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -18,7 +18,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName
     FROM appointments a JOIN clients c ON c.id = a.client_id WHERE ${appointmentId ? "a.id" : "a.check_in_token"} = ?`)
     .bind(appointmentId || token).first<{ id: string; revision: number; employeeId: string; status: string; checkInToken: string | null; startsAt: string; clientName: string; serviceName: string | null }>();
-  if (!appointment) return badRequest("Код или запись не найдены");
+  if (!appointment) return notFound("Код или запись не найдены");
   if (user.role === "SPECIALIST" && (!ownId || appointment.employeeId !== ownId)) return forbidden("Специалист может отмечать только своих клиентов");
   if (appointmentId) {
     if (!["SCHEDULED","CONFIRMED"].includes(appointment.status)) return badRequest("Код доступен только для предстоящей записи");

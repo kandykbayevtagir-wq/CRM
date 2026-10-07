@@ -83,14 +83,15 @@ export async function createSession(db: D1Database, userId: string) {
   const rawToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const tokenHash = await sha256Hex(rawToken);
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
-  await db.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
-    .bind(tokenHash, userId, expiresAt)
-    .run();
+  await db.batch([
+    db.prepare("DELETE FROM sessions WHERE user_id = ? AND julianday(expires_at) < julianday('now')").bind(userId),
+    db.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)").bind(tokenHash, userId, expiresAt),
+  ]);
   return rawToken;
 }
 
 export function sessionCookie(rawToken: string) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(rawToken)}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=${encodeURIComponent(rawToken)}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=None`;
 }
 
 export async function destroySession(request: Request, db: D1Database) {
@@ -100,5 +101,5 @@ export async function destroySession(request: Request, db: D1Database) {
 }
 
 export function clearedSessionCookie() {
-  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None`;
 }

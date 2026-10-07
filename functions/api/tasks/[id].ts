@@ -1,7 +1,8 @@
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, dateValue, json, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
+import { badRequest, json, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
+import { organizationTimezone, zonedDateValue } from "../../_lib/dates";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -16,8 +17,13 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const priority = stringValue(body, "priority", String(existing.priority ?? "NORMAL")).toUpperCase();
   if (!["OPEN", "IN_PROGRESS", "DONE", "CANCELLED"].includes(status) || !["LOW", "NORMAL", "HIGH", "URGENT"].includes(priority)) return badRequest("Некорректный статус или приоритет");
   if (user.role === "SPECIALIST" && optionalString(body, "assigneeId") && optionalString(body, "assigneeId") !== user.id) return forbidden("Специалист может назначать задачу только себе");
+  const title = (stringValue(body, "title", String(existing.title ?? "")) || String(existing.title ?? "")).slice(0, 200);
+  if (!title) return badRequest("Название задачи обязательно");
+  const assigneeId = user.role === "SPECIALIST" ? user.id : optionalString(body, "assigneeId") ?? existing.assignee_id ?? null;
+  if (assigneeId && assigneeId !== existing.assignee_id && !await env.DB.prepare("SELECT id FROM users WHERE id = ? AND active = 1 AND role <> 'CLIENT'").bind(assigneeId).first()) return badRequest("Исполнитель не найден");
+  const dueDate = zonedDateValue(body, "dueDate", await organizationTimezone(env.DB)) || existing.due_date || null;
   await env.DB.batch([
-    env.DB.prepare("UPDATE tasks SET title = ?, description = ?, assignee_id = ?, due_date = ?, priority = ?, status = ?, completed_at = CASE WHEN ? = 'DONE' THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(stringValue(body, "title", String(existing.title ?? "")), optionalString(body, "description") ?? existing.description ?? null, user.role === "SPECIALIST" ? user.id : optionalString(body, "assigneeId") ?? existing.assignee_id ?? null, dateValue(body, "dueDate") || existing.due_date || null, priority, status, status, id),
+    env.DB.prepare("UPDATE tasks SET title = ?, description = ?, assignee_id = ?, due_date = ?, priority = ?, status = ?, completed_at = CASE WHEN ? = 'DONE' THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(title, optionalString(body, "description", 2000) ?? existing.description ?? null, assigneeId, dueDate, priority, status, status, id),
     auditStatement(env.DB, user, "task", id, "UPDATE", { status: existing.status }, { status, priority }),
   ]);
   return json({ ok: true });

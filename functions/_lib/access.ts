@@ -13,3 +13,10 @@ export async function getOwnEmployeeId(db: D1Database, user: AuthUser): Promise<
 export function specialistHasEmployee(user: AuthUser, employeeId: string | null): boolean {
   return user.role !== "SPECIALIST" || Boolean(employeeId);
 }
+
+/** The client's card id when the card exists and is not archived; null otherwise. */
+export async function getActiveClientId(db: D1Database, user: AuthUser): Promise<string | null> {
+  if (!user.clientId) return null;
+  const row = await db.prepare("SELECT id FROM clients WHERE id = ? AND is_active = 1").bind(user.clientId).first<{ id: string }>();
+  return row?.id ?? null;
+}

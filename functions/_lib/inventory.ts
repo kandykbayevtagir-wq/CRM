@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 
 import type { CrmEnv } from "./env";
+import { SQL_NOW_ISO } from "./dates";
 import { newId } from "./http";
 
 export const inboundMovementTypes = new Set(["PURCHASE", "MANUAL_IN", "RETURN"]);
@@ -49,7 +50,7 @@ export async function prepareAppointmentConsumption(db: D1Database, appointmentI
           AND scoped.branch_id = a.branch_id AND scoped.active = 1
       )))
     INNER JOIN products p ON p.id = sc.product_id AND p.is_active = 1
-    WHERE a.id = ?
+    WHERE a.id = ? AND a.branch_id IS NOT NULL
     ORDER BY p.name, aps.service_id
   `).bind(appointmentId).all<ConsumableRow>();
 
@@ -90,7 +91,7 @@ export async function prepareAppointmentConsumption(db: D1Database, appointmentI
     const movementId = `movement-${idempotencyKey.replaceAll(":", "-")}`;
     statements.push(db.prepare(`INSERT OR IGNORE INTO stock_movements
       (id, product_id, branch_id, movement_type, direction, quantity, unit_price, total_cost, occurred_at, source, appointment_id, idempotency_key, comment, user_id)
-      SELECT ?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, CURRENT_TIMESTAMP, 'APPOINTMENT_COMPLETION', ?, ?, ?, ?
+      SELECT ?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, ${SQL_NOW_ISO}, 'APPOINTMENT_COMPLETION', ?, ?, ?, ?
       WHERE ? <= (SELECT ${stockBalanceExpression("available_sm")} FROM stock_movements available_sm WHERE available_sm.product_id = ? AND available_sm.branch_id = ?)`)
       .bind(movementId, row.productId, row.branchId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), appointmentId, idempotencyKey, `Автоматическое списание по услуге ${row.serviceId}`, actorId, quantity.toNumber(), row.productId, row.branchId));
     statements.push(db.prepare(`INSERT OR IGNORE INTO inventory_consumptions

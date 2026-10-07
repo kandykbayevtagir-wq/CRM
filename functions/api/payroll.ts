@@ -1,7 +1,9 @@
 import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, dateValue, json, newId, readJson, stringValue } from "../_lib/http";
+import { badRequest, conflict, json, newId, readJson, stringValue } from "../_lib/http";
+import { isValidCalendarDate, organizationTimezone, zonedInstant } from "../_lib/dates";
+import { localDayRange } from "../../src/lib/appointments/schedule";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -23,10 +25,17 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "payroll.write")) return forbidden();
   const body = await readJson(request);
-  const periodStart = dateValue(body, "periodStart");
-  const periodEndInput = stringValue(body, "periodEnd");
-  const periodEnd = periodEndInput.length === 10 ? `${periodEndInput}T23:59:59.999Z` : dateValue(body, "periodEnd");
-  if (!periodStart || !periodEnd || new Date(periodEnd).getTime() <= new Date(periodStart).getTime()) return badRequest("Укажите корректный период");
+  const timezone = await organizationTimezone(env.DB);
+  // Date-only input means organisation-local calendar days; the end day is inclusive (stored as the exclusive next midnight).
+  const startInput = stringValue(body, "periodStart");
+  const endInput = stringValue(body, "periodEnd");
+  const periodStart = zonedInstant(startInput, timezone);
+  const periodEnd = isValidCalendarDate(endInput) ? localDayRange(endInput, timezone).to : zonedInstant(endInput, timezone);
+  if (!periodStart || !periodEnd || Date.parse(periodEnd) <= Date.parse(periodStart)) return badRequest("Укажите корректный период");
+  if (Date.parse(periodEnd) - Date.parse(periodStart) > 366 * 86_400_000) return badRequest("Расчётный период не может быть длиннее года");
+  // Overlapping periods would count the same payments twice in payroll and in the ledger.
+  const overlap = await env.DB.prepare("SELECT id, period_start AS periodStart, period_end AS periodEnd FROM payroll_periods WHERE julianday(period_start) < julianday(?) AND julianday(period_end) > julianday(?) LIMIT 1").bind(periodEnd, periodStart).first<{ id: string; periodStart: string; periodEnd: string }>();
+  if (overlap) return conflict("Период пересекается с уже существующим расчётным периодом");
   const id = newId();
   try {
     await env.DB.batch([

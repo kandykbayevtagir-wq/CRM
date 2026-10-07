@@ -11,12 +11,14 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const existing = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return notFound("Поставщик не найден");
   const body = await readJson(request);
-  const name = stringValue(body, "name", String(existing.name ?? ""));
+  const name = stringValue(body, "name", String(existing.name ?? "")).slice(0, 200) || String(existing.name ?? "");
   if (!name) return badRequest("Название поставщика обязательно");
+  // Archive state changes only when the request says so; editing contacts must not re-activate an archived supplier.
+  const isActive = body.isActive === undefined ? Number(existing.is_active ?? 1) : body.isActive === false || body.isActive === "false" ? 0 : 1;
   await env.DB.batch([
     env.DB.prepare("UPDATE suppliers SET name = ?, contact_name = ?, phone = ?, telegram = ?, whatsapp = ?, email = ?, notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .bind(name, optionalString(body, "contactName") ?? existing.contact_name ?? null, optionalString(body, "phone") ?? existing.phone ?? null, optionalString(body, "telegram") ?? existing.telegram ?? null, optionalString(body, "whatsapp") ?? existing.whatsapp ?? null, optionalString(body, "email") ?? existing.email ?? null, optionalString(body, "notes") ?? existing.notes ?? null, body.isActive === false ? 0 : 1, id),
-    auditStatement(env.DB, user, "supplier", id, "UPDATE", { name: existing.name }, { name }),
+      .bind(name, optionalString(body, "contactName") ?? existing.contact_name ?? null, optionalString(body, "phone") ?? existing.phone ?? null, optionalString(body, "telegram") ?? existing.telegram ?? null, optionalString(body, "whatsapp") ?? existing.whatsapp ?? null, optionalString(body, "email") ?? existing.email ?? null, optionalString(body, "notes") ?? existing.notes ?? null, isActive, id),
+    auditStatement(env.DB, user, "supplier", id, "UPDATE", { name: existing.name, isActive: existing.is_active }, { name, isActive }),
   ]);
   return json({ ok: true });
 };

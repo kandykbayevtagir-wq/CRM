@@ -1,6 +1,6 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, json, newId, numberValue, readJson, stringValue } from "../_lib/http";
+import { badRequest, json, newId, notFound, numberValue, readJson, stringValue } from "../_lib/http";
 
 import { validShift } from "../../src/lib/appointments/schedule";
 
@@ -56,6 +56,8 @@ export const onRequestDelete: PagesFunction<CrmEnv> = async ({ request, env }) =
   if (!hasCrmPermission(user, "schedules.write")) return forbidden();
   const id = new URL(request.url).searchParams.get("id") ?? "";
   if (!id) return badRequest("Расписание не найдено");
-  await env.DB.prepare("DELETE FROM employee_schedules WHERE id = ?").bind(id).run();
+  const result = await env.DB.prepare("DELETE FROM employee_schedules WHERE id = ?").bind(id).run();
+  if (!result.meta.changes) return notFound("Расписание не найдено");
+  await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'employee_schedule', ?, 'DELETE')").bind(newId(), user.id, id).run();
   return json({ ok: true });
 };

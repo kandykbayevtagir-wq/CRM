@@ -130,13 +130,19 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   try { await env.DB.batch(statements); }
   catch (error) {
     if (await env.DB.prepare("SELECT update_id FROM telegram_updates WHERE update_id = ?").bind(update.update_id).first()) return json({ ok: true });
-    if (/mutation_precondition/.test(error instanceof Error ? error.message : "")) {
-      await env.DB.batch([
-        env.DB.prepare("INSERT OR IGNORE INTO telegram_updates(update_id) VALUES(?)").bind(update.update_id),
-        env.DB.prepare("INSERT OR IGNORE INTO message_outbox(id,event_key,telegram_id,template_key,payload_json) VALUES(?,?,?,'DIRECT',?)")
-          .bind(newId(), eventKey, telegramId, JSON.stringify({ message: "Запись уже изменилась. Откройте свои записи и проверьте актуальный статус." })),
-      ]);
-    } else throw error;
+    const message = error instanceof Error ? error.message : "";
+    // A domain-rule failure (stale revision, overlapping slot, closed visit) is answered to the client and the
+    // update is still recorded, otherwise Telegram would redeliver the same callback forever.
+    const reply = /mutation_precondition/.test(message) ? "Запись уже изменилась. Откройте свои записи и проверьте актуальный статус."
+      : /CRM_SLOT_UNAVAILABLE/.test(message) ? "Это время уже занято у специалиста. Для изменений свяжитесь с администратором."
+      : /CRM_VISIT_CLOSED/.test(message) ? "Визит уже завершён и не может быть изменён."
+      : null;
+    if (!reply) throw error;
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR IGNORE INTO telegram_updates(update_id) VALUES(?)").bind(update.update_id),
+      env.DB.prepare("INSERT OR IGNORE INTO message_outbox(id,event_key,telegram_id,template_key,payload_json) VALUES(?,?,?,'DIRECT',?)")
+        .bind(newId(), eventKey, telegramId, JSON.stringify({ message: reply })),
+    ]);
   }
   context.waitUntil(processOutbox(env, eventKey).catch(() => console.error(JSON.stringify({ event: "bot_reply_deferred", updateId: update.update_id }))));
   return json({ ok: true });

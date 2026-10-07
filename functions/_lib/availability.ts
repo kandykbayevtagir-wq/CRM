@@ -1,5 +1,7 @@
 import { localDayRange } from "../../src/lib/appointments/schedule";
 import { reservationStarts } from "../../src/lib/appointments/reservations";
+import { isoAt } from "./dates";
+import { HttpError } from "./security";
 
 export type AvailabilitySlot = {
   startsAt: string;
@@ -27,24 +29,6 @@ function timeToMinutes(value: string) {
   return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : 0;
 }
 
-function timezoneOffset(date: string, timezone: string) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longOffset", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(`${date}T12:00:00.000Z`));
-    const value = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT+05:00";
-    if (value === "GMT") return "+00:00";
-    const match = value.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-    return match ? `${match[1]}${match[2].padStart(2, "0")}:${match[3] ?? "00"}` : "+05:00";
-  } catch {
-    return "+05:00";
-  }
-}
-
-function isoAt(date: string, minutes: number, timezone: string) {
-  const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
-  const remainder = (minutes % 60).toString().padStart(2, "0");
-  return new Date(`${date}T${hours}:${remainder}:00${timezoneOffset(date, timezone)}`).toISOString();
-}
-
 function dayOfWeek(date: string) {
   const day = new Date(`${date}T12:00:00.000Z`).getUTCDay();
   return day === 0 ? 7 : day;
@@ -55,7 +39,7 @@ function isValidDate(value: string) {
 }
 
 export async function findAvailableSlots(db: D1Database, params: AvailabilityParams): Promise<AvailabilitySlot[]> {
-  if (!isValidDate(params.date)) throw new Error("Некорректная дата");
+  if (!isValidDate(params.date)) throw new HttpError(400, "INVALID_DATE", "Некорректная дата");
   const settings = await db.prepare(`
     SELECT timezone, booking_start_time AS startTime, booking_end_time AS endTime,
       booking_slot_interval AS slotInterval, working_days AS workingDays
@@ -66,9 +50,9 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   if (!workingDays.includes(day)) return [];
 
   const service = await db.prepare("SELECT id, price, duration_minutes AS durationMinutes FROM services WHERE id = ? AND is_active = 1").bind(params.serviceId).first<{ id: string; price: number; durationMinutes: number }>();
-  if (!service) throw new Error("Услуга не найдена");
+  if (!service) throw new HttpError(404, "SERVICE_NOT_FOUND", "Услуга не найдена");
   const branch = await db.prepare("SELECT id, name FROM branches WHERE id = ? AND is_active = 1").bind(params.branchId).first<{ id: string; name: string }>();
-  if (!branch) throw new Error("Филиал не найден");
+  if (!branch) throw new HttpError(404, "BRANCH_NOT_FOUND", "Филиал не найден");
 
   const employeeQuery = `
     SELECT e.id, e.full_name AS fullName, b.name AS branchName

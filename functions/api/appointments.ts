@@ -4,10 +4,13 @@ import { scheduleConflict } from "../_lib/schedule";
 import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, conflict, dateValue, json, newCheckInToken, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { badRequest, boundedString, conflict, escapeLike, json, LIKE_ESCAPE, newCheckInToken, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { isoColumn, isValidCalendarDate, normalizeIso, organizationTimezone, zonedDateValue } from "../_lib/dates";
 import { isAppointmentStatus } from "../../src/lib/appointments/transitions";
 import { reservationStatements } from "../_lib/booking";
 import { normalizePhone } from "../../src/lib/validation/phone";
+import { requirePhone } from "../_lib/validation";
+import { localDayRange } from "../../src/lib/appointments/schedule";
 
 const sources = new Set(["ADMIN", "TELEGRAM", "PHONE", "WEBSITE", "REFERRAL", "OTHER"]);
 
@@ -18,17 +21,21 @@ function serviceIdsFromBody(body: Record<string, unknown>): string[] {
   return [];
 }
 
-function dateRange(request: Request) {
+/** Date-only bounds are organisation-local calendar days (the `to` day inclusive); instants are used as-is. */
+function dateRange(request: Request, timezone: string) {
   const params = new URL(request.url).searchParams;
-  const date = params.get("date")?.trim();
-  const from = params.get("from")?.trim() || (date ? `${date}T00:00:00.000Z` : "");
-  const to = params.get("to")?.trim() || (date ? `${date}T23:59:59.999Z` : "");
+  const date = params.get("date")?.trim() ?? "";
+  const fromRaw = params.get("from")?.trim() || date;
+  const toRaw = params.get("to")?.trim() || date;
+  const from = fromRaw ? (isValidCalendarDate(fromRaw) ? localDayRange(fromRaw, timezone).from : normalizeIso(fromRaw)) : "";
+  const to = toRaw ? (isValidCalendarDate(toRaw) ? localDayRange(toRaw, timezone).to : normalizeIso(toRaw)) : "";
   return { from, to };
 }
 
 const appointmentSelect = `
-  SELECT a.id, a.starts_at AS startsAt, a.ends_at AS endsAt, a.status, a.total_amount AS amount,
+  SELECT a.id, a.revision, ${isoColumn("a.starts_at")} AS startsAt, ${isoColumn("a.ends_at")} AS endsAt, a.status, a.total_amount AS amount,
     a.notes, a.cancel_reason AS cancelReason, a.source,
+    a.client_id AS clientId, a.employee_id AS employeeId, a.branch_id AS branchId,
     c.full_name AS clientName, c.phone AS clientPhone,
     (SELECT group_concat(s.name, ', ') FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName,
     e.full_name AS employeeName, b.name AS branchName,
@@ -52,8 +59,9 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "appointments.read")) return forbidden();
   const params = new URL(request.url).searchParams;
-  const { from, to } = dateRange(request);
-  const query = params.get("q")?.trim() ?? "";
+  const timezone = await organizationTimezone(env.DB);
+  const { from, to } = dateRange(request, timezone);
+  const query = (params.get("q")?.trim() ?? "").slice(0, 100);
   const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
   const pageSize = Math.min(200, Math.max(10, Number(params.get("pageSize") ?? "50") || 50));
   const filters: string[] = [];
@@ -61,18 +69,18 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const ownId = await ownEmployeeId(env, user.id, user.role);
   if (user.role === "SPECIALIST" && !ownId) return json({ ok: true, items: [], total: 0, page, pageSize, pages: 0 });
   if (ownId) { filters.push("a.employee_id = ?"); bindings.push(ownId); }
-  if (from) { filters.push("a.starts_at >= ?"); bindings.push(from); }
-  if (to) { filters.push("a.starts_at <= ?"); bindings.push(to); }
+  if (from) { filters.push("julianday(a.starts_at) >= julianday(?)"); bindings.push(from); }
+  if (to) { filters.push("julianday(a.starts_at) < julianday(?)"); bindings.push(to); }
   const branchId = params.get("branchId")?.trim();
   const employeeId = params.get("employeeId")?.trim();
   const status = params.get("status")?.trim().toUpperCase();
   if (branchId) { filters.push("a.branch_id = ?"); bindings.push(branchId); }
   if (employeeId && !ownId) { filters.push("a.employee_id = ?"); bindings.push(employeeId); }
   if (status && isAppointmentStatus(status)) { filters.push("a.status = ?"); bindings.push(status); }
-  if (query) { filters.push("(c.full_name LIKE ? OR c.phone LIKE ? OR c.phone_normalized LIKE ?)"); bindings.push(`%${query}%`, `%${query}%`, `%${normalizePhone(query) || query}%`); }
+  if (query) { filters.push(`(c.full_name LIKE ? ${LIKE_ESCAPE} OR c.phone LIKE ? ${LIKE_ESCAPE} OR c.phone_normalized LIKE ? ${LIKE_ESCAPE})`); bindings.push(`%${escapeLike(query)}%`, `%${escapeLike(query)}%`, `%${escapeLike(normalizePhone(query) || query)}%`); }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const [result, count] = await Promise.all([
-    env.DB.prepare(`${appointmentSelect} ${where} ORDER BY a.starts_at DESC LIMIT ? OFFSET ?`).bind(...bindings, pageSize, (page - 1) * pageSize).all(),
+    env.DB.prepare(`${appointmentSelect} ${where} ORDER BY julianday(a.starts_at) DESC LIMIT ? OFFSET ?`).bind(...bindings, pageSize, (page - 1) * pageSize).all(),
     env.DB.prepare(`SELECT COUNT(*) AS value FROM appointments a INNER JOIN clients c ON c.id = a.client_id ${where}`).bind(...bindings).first<{ value: number }>(),
   ]);
   const total = Number(count?.value ?? 0);
@@ -84,23 +92,28 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "appointments.write")) return forbidden();
   const body = await readJson(request);
-  const startsAt = dateValue(body, "startsAt");
+  // datetime-local input has no zone: interpret wall-clock time at the centre.
+  const timezone = await organizationTimezone(env.DB);
+  const startsAt = zonedDateValue(body, "startsAt", timezone);
   const branchId = optionalString(body, "branchId");
   const employeeId = optionalString(body, "employeeId");
   const clientIdFromBody = optionalString(body, "clientId");
-  const clientName = stringValue(body, "clientName");
-  const clientPhoneRaw = stringValue(body, "clientPhone");
+  const clientName = boundedString(body, "clientName", 200);
+  const clientPhoneRaw = boundedString(body, "clientPhone", 40);
+  const notes = optionalString(body, "notes", 2000);
   const serviceIds = [...new Set(serviceIdsFromBody(body))];
   if (serviceIds.length > 20) return badRequest("В одну запись можно добавить не более 20 услуг");
   const idempotencyKey = stringValue(body, "idempotencyKey");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ операции");
-  const requestHash = JSON.stringify([startsAt, branchId, employeeId, clientIdFromBody, clientName, clientPhoneRaw, [...serviceIds].sort(), body.notes ?? null, body.status ?? "SCHEDULED"]);
+  const requestHash = JSON.stringify([startsAt, branchId, employeeId, clientIdFromBody, clientName, clientPhoneRaw, [...serviceIds].sort(), notes, body.status ?? "SCHEDULED"]);
   if (idempotencyKey) {
-    const replay = await env.DB.prepare("SELECT appointment_id AS id, request_hash AS requestHash FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ?").bind(idempotencyKey, user.id).first<{ id: string; requestHash: string }>();
+    const replay = await env.DB.prepare("SELECT appointment_id AS id, user_id AS userId, request_hash AS requestHash FROM booking_idempotency_keys WHERE idempotency_key = ?").bind(idempotencyKey).first<{ id: string; userId: string; requestHash: string }>();
+    if (replay && replay.userId !== user.id) return conflict("Этот ключ уже использован");
     if (replay) return replay.requestHash === requestHash ? json({ ok: true, id: replay.id, replayed: true }) : conflict("Этот ключ уже использован для другой записи");
   }
   const ownId = await ownEmployeeId(env, user.id, user.role);
-  if (!startsAt || !branchId || !employeeId || !serviceIds.length || (user.role === "SPECIALIST" && employeeId !== ownId)) return badRequest("Дата, филиал, специалист, клиент и услуги обязательны");
+  if (!startsAt || !branchId || !employeeId || !serviceIds.length) return badRequest("Дата, филиал, специалист, клиент и услуги обязательны");
+  if (user.role === "SPECIALIST" && employeeId !== ownId) return forbidden("Специалист может создавать записи только к себе");
 
   const [branch, employee] = await Promise.all([
     env.DB.prepare("SELECT id, name FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first<{ id: string; name: string }>(),
@@ -115,8 +128,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     const client = await env.DB.prepare("SELECT id FROM clients WHERE id = ? AND is_active = 1").bind(clientId).first<{ id: string }>();
     if (!client) return badRequest("Клиент не найден или архивирован");
   } else {
-    const normalized = normalizePhone(clientPhoneRaw);
-    if (!clientName || !normalized) return badRequest("Укажите клиента или имя с корректным телефоном");
+    const normalized = requirePhone(normalizePhone(clientPhoneRaw));
+    if (!clientName || clientName.length < 2 || !normalized) return badRequest("Укажите клиента или имя с корректным телефоном", { clientPhone: "Введите 10 цифр после +7" });
     const existingClient = await env.DB.prepare("SELECT id FROM clients WHERE phone_normalized = ? AND is_active = 1 LIMIT 1").bind(normalized).first<{ id: string }>();
     clientId = existingClient?.id ?? newId();
     if (!existingClient) statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, is_active) VALUES (?, ?, ?, ?, 1)").bind(clientId, clientName, clientPhoneRaw, normalized));
@@ -144,7 +157,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const conflictRow = await env.DB.prepare(`
     SELECT id FROM appointments
     WHERE employee_id = ? AND status NOT IN ('CANCELLED', 'NO_SHOW')
-      AND starts_at < ? AND COALESCE(ends_at, datetime(starts_at, '+60 minutes')) > ? LIMIT 1
+      AND julianday(starts_at) < julianday(?) AND julianday(COALESCE(ends_at, datetime(starts_at, '+60 minutes'))) > julianday(?) LIMIT 1
   `).bind(employeeId, endsAt, startsAt).first<{ id: string }>();
   if (conflictRow) return conflict("У специалиста уже есть пересекающаяся запись");
 
@@ -155,7 +168,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const sourceValue = stringValue(body, "source", "ADMIN").toUpperCase();
   const source = sources.has(sourceValue) ? sourceValue : "ADMIN";
   statements.push(env.DB.prepare(`INSERT INTO appointments (id, client_id, employee_id, branch_id, starts_at, ends_at, status, source, total_amount, notes, check_in_token, created_by, changed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, clientId, employeeId, branchId, startsAt, endsAt, status, source, Number(total.toFixed(2)), optionalString(body, "notes"), newCheckInToken(), user.id, user.id));
+    .bind(id, clientId, employeeId, branchId, startsAt, endsAt, status, source, Number(total.toFixed(2)), notes, newCheckInToken(), user.id, user.id));
   for (const service of services) {
     statements.push(env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, service.id, Number(new Decimal(service.price ?? 0).toFixed(2)), service.durationMinutes));
   }
@@ -179,7 +192,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     `).bind(clientId).first<{ telegramId: string; notificationsAllowed: number; clientName: string }>();
     if (recipient) {
       statements.push(env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, 'BOOKING_CONFIRMED', ?)")
-        .bind(newId(), `appointment:${id}:confirmed:staff`, recipient.telegramId, JSON.stringify({ clientName: recipient.clientName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), specialist: employee.fullName, service: services[0]?.name ?? "Приём", branch: branch.name })));
+        .bind(newId(), `appointment:${id}:confirmed:staff`, recipient.telegramId, JSON.stringify({ clientName: recipient.clientName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: timezone }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: timezone }).format(new Date(startsAt)), specialist: employee.fullName, service: services.map((service) => service.name).join(", ") || "Приём", branch: branch.name })));
     }
   }
   try {
@@ -191,6 +204,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
       const replay = await env.DB.prepare("SELECT appointment_id AS id, request_hash AS requestHash FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ?").bind(idempotencyKey, user.id).first<{ id: string; requestHash: string }>();
       if (replay && replay.requestHash === requestHash) return json({ ok: true, id: replay.id, replayed: true });
     }
+    if (/CRM_DUPLICATE_PHONE/.test(message)) return conflict("Клиент с таким телефоном уже есть в базе. Выберите его из списка.");
     if (/CRM_SLOT_UNAVAILABLE|unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
     return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);
   }

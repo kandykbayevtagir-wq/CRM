@@ -2,7 +2,7 @@ import { prepareAppointmentConsumption } from "../../_lib/inventory";
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, json, readJson, stringValue } from "../../_lib/http";
+import { badRequest, json, notFound, readJson, stringValue } from "../../_lib/http";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -22,7 +22,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
   const status = stringValue(body, "status", "RESOLVED").toUpperCase();
   if (!id || !["RESOLVED", "IGNORED"].includes(status)) return badRequest("Укажите проблему и корректный статус");
   const issue = await env.DB.prepare("SELECT appointment_id AS appointmentId FROM inventory_issues WHERE id = ? AND status = 'OPEN'").bind(id).first<{ appointmentId: string }>();
-  if (!issue) return badRequest("Проблема уже обработана или не найдена");
+  if (!issue) return notFound("Проблема уже обработана или не найдена");
   if (status === "RESOLVED") {
     const appointment = await env.DB.prepare("SELECT status FROM appointments WHERE id = ?").bind(issue.appointmentId).first<{ status: string }>();
     if (appointment?.status !== "COMPLETED") return badRequest("Списание возможно только для завершённого приёма");
@@ -31,7 +31,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
     const remaining = await env.DB.prepare("SELECT id FROM inventory_issues WHERE id = ? AND status = 'OPEN'").bind(id).first();
     return json({ ok: !remaining, ...(remaining ? { error: "Материала всё ещё недостаточно. Пополните склад и повторите списание." } : {}) }, remaining ? 409 : 200);
   }
-  const reason = stringValue(body, "reason");
+  const reason = stringValue(body, "reason").slice(0, 500);
   if (!reason) return badRequest("Укажите причину, чтобы пропустить списание");
   const result = await env.DB.prepare("UPDATE inventory_issues SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'OPEN'").bind(status, id).run();
   if (!result.meta.changes) return badRequest("Проблема уже обработана или не найдена");

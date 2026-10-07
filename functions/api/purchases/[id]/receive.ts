@@ -3,7 +3,8 @@ import Decimal from "decimal.js";
 import { auditStatement } from "../../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../../_lib/auth";
 import type { CrmEnv } from "../../../_lib/env";
-import { badRequest, dateValue, json, newId, readJson, stringValue } from "../../../_lib/http";
+import { badRequest, conflict, json, newId, notFound, readJson, stringValue } from "../../../_lib/http";
+import { organizationTimezone, zonedDateValue } from "../../../_lib/dates";
 import { nonNegativeNumber } from "../../../_lib/validation";
 
 type ReceiveItem = { purchaseItemId: string; quantity: number; unitCost?: number };
@@ -14,7 +15,9 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   if (!hasCrmPermission(user, "purchases.write")) return forbidden();
   const purchaseId = Array.isArray(params.id) ? params.id[0] : params.id;
   const purchase = await env.DB.prepare("SELECT id, branch_id AS branchId, status FROM purchases WHERE id = ?").bind(purchaseId).first<{ id: string; branchId: string; status: string }>();
-  if (!purchase || purchase.status === "CANCELLED") return badRequest("Закупка не найдена или отменена");
+  if (!purchase) return notFound("Закупка не найдена");
+  // Only an ordered purchase can be received; drafts are not yet confirmed with the supplier.
+  if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(purchase.status)) return badRequest(purchase.status === "CANCELLED" ? "Закупка отменена" : purchase.status === "RECEIVED" ? "Закупка уже полностью принята" : "Сначала переведите закупку в статус «Заказано»");
   const body = await readJson(request);
   const items = (Array.isArray(body.items) ? body.items : []).map((raw): ReceiveItem | null => {
     if (!raw || typeof raw !== "object") return null;
@@ -24,7 +27,10 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
     return typeof item.purchaseItemId === "string" && quantity !== null && quantity > 0 && (item.unitCost === undefined || unitCost !== null) ? { purchaseItemId: item.purchaseItemId, quantity, ...(unitCost === undefined || unitCost === null ? {} : { unitCost }) } : null;
   }).filter((item): item is ReceiveItem => item !== null);
   if (!items.length) return badRequest("Укажите хотя бы одну принимаемую позицию");
-  const key = stringValue(body, "idempotencyKey") || newId();
+  if (items.length > 50) return badRequest("За один раз можно принять не более 50 позиций");
+  const key = stringValue(body, "idempotencyKey").slice(0, 128) || newId();
+  const receivedAt = zonedDateValue(body, "receivedAt", await organizationTimezone(env.DB)) || new Date().toISOString();
+  let conditionalStatements = 0;
   const statements: D1PreparedStatement[] = [];
   const requestedMovementKeys: string[] = [];
   for (const item of items) {
@@ -39,6 +45,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
     requestedMovementKeys.push(movementKey);
     const movementId = newId();
     const totalCost = new Decimal(item.quantity).mul(unitCost).toNumber();
+    conditionalStatements += 1;
     statements.push(
       // Both statements use the same conditional remaining quantity. D1 runs
       // the batch atomically, so concurrent receipts cannot create stock first
@@ -47,7 +54,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
         SELECT ?, ?, ?, 'PURCHASE', 'IN', ?, ?, ?, ?, ?, 'PURCHASE_RECEIPT', ?, ?, ?, ?
         FROM purchase_items pi
         WHERE pi.id = ? AND pi.purchase_id = ? AND pi.received_quantity + ? <= pi.ordered_quantity`)
-        .bind(movementId, row.productId, purchase.branchId, item.quantity, unitCost, totalCost, dateValue(body, "receivedAt") || new Date().toISOString(), user.id, purchaseId, item.purchaseItemId, movementKey, `Приёмка закупки ${purchaseId}`, item.purchaseItemId, purchaseId, item.quantity),
+        .bind(movementId, row.productId, purchase.branchId, item.quantity, unitCost, totalCost, receivedAt, user.id, purchaseId, item.purchaseItemId, movementKey, `Приёмка закупки ${purchaseId}`, item.purchaseItemId, purchaseId, item.quantity),
       env.DB.prepare("UPDATE purchase_items SET received_quantity = received_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND purchase_id = ? AND received_quantity + ? <= ordered_quantity")
         .bind(item.quantity, item.purchaseItemId, purchaseId, item.quantity),
       env.DB.prepare("UPDATE products SET purchase_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND EXISTS (SELECT 1 FROM stock_movements WHERE id = ?)")
@@ -58,7 +65,15 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   statements.push(env.DB.prepare(`UPDATE purchases SET status = CASE WHEN (SELECT COUNT(*) FROM purchase_items WHERE purchase_id = ? AND received_quantity < ordered_quantity) = 0 THEN 'RECEIVED' ELSE 'PARTIALLY_RECEIVED' END, delivery_date = COALESCE(delivery_date, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(purchaseId, purchaseId));
   statements.push(auditStatement(env.DB, user, "purchase", purchaseId, "RECEIVE", null, { items }));
   try {
-    await env.DB.batch(statements);
+    const results = await env.DB.batch(statements);
+    // Every item is written by three statements (movement, item, product price); a zero-change movement means
+    // a concurrent receipt already consumed the remainder, so the whole batch must not count as a success.
+    const movementResults = results.filter((_, index) => index % 3 === 0 && index < conditionalStatements * 3);
+    if (movementResults.some((result) => Number(result?.meta?.changes ?? 0) !== 1)) {
+      // The batch is atomic, but D1 has no rollback-on-condition: a no-op movement left the other statements untouched too.
+      const applied = await env.DB.prepare(`SELECT COUNT(*) AS value FROM stock_movements WHERE idempotency_key IN (${requestedMovementKeys.map(() => "?").join(",")})`).bind(...requestedMovementKeys).first<{ value: number }>();
+      if (Number(applied?.value ?? 0) !== requestedMovementKeys.length) return conflict("Остаток к приёму изменился: часть позиций уже принята. Обновите закупку и повторите.");
+    }
   } catch (cause) {
     if (/unique|constraint/i.test(cause instanceof Error ? cause.message : "") && requestedMovementKeys.length) {
       const placeholders = requestedMovementKeys.map(() => "?").join(",");

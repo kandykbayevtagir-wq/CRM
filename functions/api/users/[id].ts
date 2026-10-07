@@ -2,6 +2,7 @@ import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, notFound, readJson, stringValue } from "../../_lib/http";
+import { optionalPhoneValue } from "../../_lib/validation";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -25,8 +26,11 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     if (!client) return badRequest("Карточка клиента не найдена или уже привязана к другому Telegram ID");
   }
   if (id === user.id && (active === 0 || role !== "OWNER")) return badRequest("Нельзя отключить или понизить собственную учётную запись владельца");
+  const phone = optionalPhoneValue(body);
+  if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
+  const name = stringValue(body, "name", existing.name).slice(0, 120) || existing.name;
   await env.DB.batch([
-    env.DB.prepare("UPDATE users SET name = ?, role = ?, active = ?, client_id = ?, phone = COALESCE(?, phone), updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(stringValue(body, "name", existing.name), role, active, clientId, body.phone === null ? null : stringValue(body, "phone") || null, id),
+    env.DB.prepare("UPDATE users SET name = ?, role = ?, active = ?, client_id = ?, phone = COALESCE(?, phone), updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(name, role, active, clientId, body.phone === null ? null : phone.provided ? phone.value : null, id),
     auditStatement(env.DB, user, "user", id, "UPDATE", { role: existing.role, active: existing.active }, { role, active }),
     ...(existing.role !== role || existing.active !== active || existing.clientId !== clientId
       ? [env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id)] : []),
