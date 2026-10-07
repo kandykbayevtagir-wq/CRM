@@ -31,7 +31,7 @@ type ConsumableRow = {
   existingConsumption: number;
 };
 
-export async function prepareAppointmentConsumption(db: D1Database, appointmentId: string) {
+export async function prepareAppointmentConsumption(db: D1Database, appointmentId: string, actorId: string | null = null) {
   const rows = await db.prepare(`
     SELECT a.id AS appointmentId, a.branch_id AS branchId, aps.service_id AS serviceId,
       sc.product_id AS productId, p.name AS productName, p.unit AS productUnit,
@@ -89,16 +89,20 @@ export async function prepareAppointmentConsumption(db: D1Database, appointmentI
     const idempotencyKey = `appointment:${appointmentId}:service:${row.serviceId}:product:${row.productId}`;
     const movementId = `movement-${idempotencyKey.replaceAll(":", "-")}`;
     statements.push(db.prepare(`INSERT OR IGNORE INTO stock_movements
-      (id, product_id, branch_id, movement_type, direction, quantity, unit_price, total_cost, occurred_at, source, appointment_id, idempotency_key, comment)
-      SELECT ?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, CURRENT_TIMESTAMP, 'APPOINTMENT_COMPLETION', ?, ?, ?
+      (id, product_id, branch_id, movement_type, direction, quantity, unit_price, total_cost, occurred_at, source, appointment_id, idempotency_key, comment, user_id)
+      SELECT ?, ?, ?, 'SERVICE_USAGE', 'OUT', ?, ?, ?, CURRENT_TIMESTAMP, 'APPOINTMENT_COMPLETION', ?, ?, ?, ?
       WHERE ? <= (SELECT ${stockBalanceExpression("available_sm")} FROM stock_movements available_sm WHERE available_sm.product_id = ? AND available_sm.branch_id = ?)`)
-      .bind(movementId, row.productId, row.branchId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), appointmentId, idempotencyKey, `Автоматическое списание по услуге ${row.serviceId}`, quantity.toNumber(), row.productId, row.branchId));
+      .bind(movementId, row.productId, row.branchId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), appointmentId, idempotencyKey, `Автоматическое списание по услуге ${row.serviceId}`, actorId, quantity.toNumber(), row.productId, row.branchId));
     statements.push(db.prepare(`INSERT OR IGNORE INTO inventory_consumptions
       (id, appointment_id, service_id, product_id, stock_movement_id, quantity, unit_cost, total_cost)
       SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_movements WHERE id = ?)`)
       .bind(`consumption-${idempotencyKey.replaceAll(":", "-")}`, appointmentId, row.serviceId, row.productId, movementId, quantity.toNumber(), unitCost.toNumber(), totalCost.toNumber(), movementId));
-    statements.push(db.prepare("UPDATE inventory_issues SET status = 'RESOLVED', resolved_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND service_id = ? AND product_id = ? AND status = 'OPEN'")
-      .bind(appointmentId, row.serviceId, row.productId));
+    statements.push(db.prepare("UPDATE inventory_issues SET status = 'RESOLVED', resolved_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND service_id = ? AND product_id = ? AND status = 'OPEN' AND EXISTS (SELECT 1 FROM inventory_consumptions WHERE stock_movement_id = ?)")
+      .bind(appointmentId, row.serviceId, row.productId, movementId));
+    statements.push(db.prepare(`INSERT OR IGNORE INTO inventory_issues (id, appointment_id, service_id, product_id, required_quantity, available_quantity, message)
+      SELECT ?, ?, ?, ?, ?, MAX(0, (SELECT ${stockBalanceExpression("sm")} FROM stock_movements sm WHERE sm.product_id = ? AND sm.branch_id = ?)), ?
+      WHERE NOT EXISTS (SELECT 1 FROM inventory_consumptions WHERE stock_movement_id = ?)`)
+      .bind(newId(), appointmentId, row.serviceId, row.productId, quantity.toNumber(), row.productId, row.branchId, "Остаток изменился при завершении приёма. Пополните склад и повторите списание.", movementId));
   }
 
   return { statements, warnings };

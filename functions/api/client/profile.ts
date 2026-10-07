@@ -10,7 +10,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!isClient(user)) return forbidden();
   const client = user.clientId
     ? await env.DB.prepare(`
-        SELECT id, full_name AS fullName, phone, email, notes, created_at AS createdAt,
+        SELECT id, full_name AS fullName, phone, email, profile_notes AS notes, created_at AS createdAt,
           (SELECT points_balance FROM loyalty_accounts la WHERE la.client_id = c.id) AS pointsBalance
         FROM clients c WHERE c.id = ?
       `).bind(user.clientId).first()
@@ -45,11 +45,11 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (existingByPhone && !user.clientId) return badRequest("Проверьте данные", { phone: "Этот номер уже используется в CRM. Для защиты данных обратитесь администратору." });
   const clientId = user.clientId ?? newId();
   const statements: D1PreparedStatement[] = [];
-  const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
+  const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, profile_notes AS notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
   if (user.clientId) {
-    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
+    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, profile_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
   } else {
-    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));
+    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, profile_notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));
   }
   statements.push(env.DB.prepare("UPDATE users SET client_id = ?, phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(clientId, phone, user.id));
   statements.push(env.DB.prepare("INSERT OR IGNORE INTO client_consents (id, client_id, kind, version) VALUES (?, ?, 'PRIVACY', '2026-08-10')").bind(newId(), clientId));

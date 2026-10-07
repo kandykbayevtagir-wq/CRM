@@ -40,6 +40,7 @@ import { AuthHint, EmptyState, ErrorState, LoadingState, isAuthError } from "@/c
 import { hasPermission, type Permission } from "@/lib/permissions";
 
 const primaryNavigation = [
+  { href: "/today", label: "Сегодня", icon: CalendarClock, permission: "appointments.manage_all" as Permission },
   { href: "/", label: "Обзор", icon: LayoutDashboard, permission: "dashboard.read" as Permission },
   { href: "/appointments", label: "Записи", icon: CalendarDays, permission: "appointments.read" as Permission },
   { href: "/clients", label: "Клиенты", icon: UsersRound, permission: "clients.read" as Permission },
@@ -71,6 +72,7 @@ function formatShellDate(value: string | null | undefined) {
 }
 
 function permissionForPath(pathname: string): Permission | null {
+  if (pathname === "/today") return "appointments.manage_all";
   if (pathname === "/appointments" || pathname.startsWith("/appointments/")) return "appointments.read";
   if (pathname === "/clients" || pathname.startsWith("/clients/")) return "clients.read";
   if (pathname === "/employees" || pathname.startsWith("/employees/")) return "employees.read";
@@ -108,7 +110,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [openPanel, setOpenPanel] = useState<"notifications" | "profile" | null>(null);
   const topbarActionsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    setSelectedBranchId(window.localStorage.getItem("pmk_branch_id") ?? "");
+    try { setSelectedBranchId(window.localStorage.getItem("pmk_branch_id") ?? ""); } catch { setSelectedBranchId(""); }
   }, []);
   useEffect(() => {
     document.body.classList.toggle("mobile-menu-open", mobileOpen);
@@ -138,7 +140,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const initials = user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "—";
   const role = user?.role === "OWNER" ? "Владелец" : user?.role === "ADMINISTRATOR" ? "Администратор" : user?.role === "SPECIALIST" ? "Специалист" : user?.role === "ACCOUNTANT" ? "Бухгалтер" : "Гость";
   const pageLabels: Record<string, string> = { "/": "Обзор", "/appointments": "Записи", "/clients": "Клиенты", "/employees": "Сотрудники", "/tasks": "Задачи", "/services": "Услуги", "/schedules": "Расписание", "/reviews": "Отзывы", "/finance": "Финансы", "/payroll": "Зарплата", "/reports": "Отчёты", "/pnl": "P&L", "/kpi": "KPI команды", "/goals": "План / факт", "/inventory": "Склад", "/purchases": "Закупки", "/suppliers": "Поставщики", "/retention": "Retention", "/campaigns": "Кампании", "/settings": "Настройки" };
-  const pageLabel = pageLabels[pathname] ?? pathname.slice(1);
+  const pageLabel = pathname === "/today" ? "Сегодня" : pageLabels[pathname] ?? pathname.slice(1);
 
   async function logout() {
     try {
@@ -296,7 +298,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div> : null}
           </div>
         </header>
-        <main className="content-area page-transition">{children}</main>
+        <main id="main-content" tabIndex={-1} className="content-area page-transition">{children}</main>
       </div>
     </div>
   );

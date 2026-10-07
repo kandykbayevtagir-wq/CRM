@@ -33,7 +33,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     env.DB.prepare(`SELECT a.employee_id AS employeeId, COALESCE(SUM(pa.amount), 0) AS value FROM payment_adjustments pa INNER JOIN payments p ON p.id = pa.payment_id INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND pa.occurred_at >= ? AND pa.occurred_at < ?${branchId ? " AND a.branch_id = ?" : ""} GROUP BY a.employee_id`).bind(from, to, ...branchBinding).all<{ employeeId: string; value: number }>(),
     env.DB.prepare(`SELECT l.employee_id AS employeeId, COALESCE(SUM(l.total_amount), 0) AS value FROM payroll_lines l INNER JOIN payroll_periods pp ON pp.id = l.period_id WHERE pp.status IN ('CALCULATED', 'CLOSED') AND pp.period_start < ? AND pp.period_end >= ? GROUP BY l.employee_id`).bind(to, from).all<{ employeeId: string; value: number }>(),
     metricSnapshot(env.DB, from, to, request),
-    env.DB.prepare("SELECT timezone FROM organization_settings WHERE id = 1").first<{ timezone: string }>(),
+    env.DB.prepare("SELECT timezone, booking_start_time AS startTime, booking_end_time AS endTime, working_days AS workingDays FROM organization_settings WHERE id = 1").first<{ timezone: string; startTime: string; endTime: string; workingDays: string }>(),
   ]);
   const occupancyMap = new Map((occupied.results ?? []).map((row) => [row.employeeId, Number(row.value ?? 0)]));
   const noShowMap = new Map((noShows.results ?? []).map((row) => [row.employeeId, Number(row.value ?? 0)]));
@@ -44,7 +44,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const kpiRows = await Promise.all((employees.results ?? []).map(async (employee) => {
     const employeeSchedules = (schedules.results ?? []).filter((row) => row.employeeId === employee.employeeId);
     const employeeTimeOff = (timeOff.results ?? []).filter((row) => row.employeeId === employee.employeeId);
-    const availableMinutes = calculateAvailableWorkingMinutes(employeeSchedules, employeeTimeOff, new Date(from), new Date(to), settings?.timezone ?? "Asia/Almaty");
+    const availableMinutes = calculateAvailableWorkingMinutes(employeeSchedules, employeeTimeOff, new Date(from), new Date(to), settings?.timezone ?? "Asia/Almaty", settings ?? {});
     const occupiedMinutes = occupancyMap.get(employee.employeeId) ?? 0;
     const completed = revenueMap.get(employee.employeeId)?.appointments ?? 0;
     const revenue = new Decimal(revenueMap.get(employee.employeeId)?.revenue ?? 0);

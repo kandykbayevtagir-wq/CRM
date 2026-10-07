@@ -2,15 +2,17 @@ import { calculatePayroll } from "../../src/lib/finance/payroll";
 import { auditStatement } from "./audit";
 import type { AuthUser } from "./auth";
 import { newId } from "./http";
+import { assertUnchanged } from "./transaction";
+import { HttpError } from "./security";
 
 type EmployeeRow = { id: string; fullName: string; fixedSalary: number; revenuePercent: number };
 type AdjustmentRow = { employeeId: string; kind: string; amount: number; reason: string };
 type PaymentDetailRow = { paymentId: string; appointmentId: string; paidAt: string; clientName: string; amount: number; refundedAmount: number };
 
 export async function calculatePayrollPeriod(db: D1Database, periodId: string, actor: AuthUser) {
-  const period = await db.prepare("SELECT id, period_start AS periodStart, period_end AS periodEnd, status, closed_at AS closedAt FROM payroll_periods WHERE id = ?").bind(periodId).first<{ id: string; periodStart: string; periodEnd: string; status: string; closedAt: string | null }>();
-  if (!period) throw new Error("Расчётный период не найден");
-  if (period.status === "CLOSED") throw new Error("Закрытый период нельзя пересчитать");
+  const period = await db.prepare("SELECT id, revision, period_start AS periodStart, period_end AS periodEnd, status, closed_at AS closedAt FROM payroll_periods WHERE id = ?").bind(periodId).first<{ id: string; revision: number; periodStart: string; periodEnd: string; status: string; closedAt: string | null }>();
+  if (!period) throw new HttpError(404, "PAYROLL_NOT_FOUND", "Расчётный период не найден");
+  if (period.status === "CLOSED") throw new HttpError(409, "PAYROLL_CLOSED", "Закрытый период нельзя пересчитать");
   const [employees, adjustments] = await Promise.all([
     db.prepare("SELECT id, full_name AS fullName, fixed_salary AS fixedSalary, revenue_percent AS revenuePercent FROM employees WHERE is_active = 1 ORDER BY full_name").all<EmployeeRow>(),
     db.prepare("SELECT employee_id AS employeeId, kind, amount, reason FROM payroll_adjustments WHERE period_id = ? ORDER BY created_at").bind(periodId).all<AdjustmentRow>(),
@@ -54,7 +56,10 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
     } });
   }
   const total = lines.reduce((sum, line) => sum + Number(line.calculation.totalAmount), 0);
-  const statements: D1PreparedStatement[] = [];
+  const statements: D1PreparedStatement[] = [
+    ...assertUnchanged(db, "payroll_periods", periodId, period.revision),
+    db.prepare("DELETE FROM payroll_lines WHERE period_id = ?").bind(periodId),
+  ];
   for (const line of lines) {
     const c = line.calculation;
     statements.push(db.prepare(`
@@ -72,13 +77,14 @@ export async function calculatePayrollPeriod(db: D1Database, periodId: string, a
 }
 
 export async function closePayrollPeriod(db: D1Database, periodId: string, actor: AuthUser) {
-  const period = await db.prepare("SELECT id, status, total_amount AS totalAmount, period_end AS periodEnd, ledger_transaction_id AS ledgerId FROM payroll_periods WHERE id = ?").bind(periodId).first<{ id: string; status: string; totalAmount: number; periodEnd: string; ledgerId: string | null }>();
-  if (!period) throw new Error("Расчётный период не найден");
+  const period = await db.prepare("SELECT id, revision, status, total_amount AS totalAmount, period_end AS periodEnd, ledger_transaction_id AS ledgerId FROM payroll_periods WHERE id = ?").bind(periodId).first<{ id: string; revision: number; status: string; totalAmount: number; periodEnd: string; ledgerId: string | null }>();
+  if (!period) throw new HttpError(404, "PAYROLL_NOT_FOUND", "Расчётный период не найден");
   if (period.status === "CLOSED") return { periodId, status: "CLOSED", totalAmount: Number(period.totalAmount ?? 0) };
-  if (period.status !== "CALCULATED") throw new Error("Сначала рассчитайте период");
-  const ledgerId = period.ledgerId ?? newId();
+  if (period.status !== "CALCULATED") throw new HttpError(409, "PAYROLL_NOT_CALCULATED", "Сначала рассчитайте период");
+  const ledgerId = period.ledgerId ?? `payroll-${periodId}`;
   await db.batch([
-    db.prepare("UPDATE payroll_periods SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP, closed_by = ?, ledger_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'CALCULATED'").bind(actor.id, ledgerId, periodId),
+    ...assertUnchanged(db, "payroll_periods", periodId, period.revision),
+    db.prepare("UPDATE payroll_periods SET status = 'CLOSED', revision = revision + 1, closed_at = CURRENT_TIMESTAMP, closed_by = ?, ledger_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'CALCULATED'").bind(actor.id, ledgerId, periodId),
     db.prepare("INSERT OR IGNORE INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, payroll_period_id, description, created_by) VALUES (?, 'EXPENSE', 'SALARY', 'SALARY', ?, 'POSTED', ?, ?, 'Закрытый расчёт зарплаты', ?)").bind(ledgerId, Number(period.totalAmount ?? 0), period.periodEnd, periodId, actor.id),
     auditStatement(db, actor, "payroll_period", periodId, "CLOSE", { status: "CALCULATED", totalAmount: period.totalAmount }, { status: "CLOSED", totalAmount: period.totalAmount }),
   ]);

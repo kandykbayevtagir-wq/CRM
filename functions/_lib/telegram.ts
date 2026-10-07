@@ -29,7 +29,8 @@ export async function validateTelegramInitData(initData: string, botToken: strin
   const params = new URLSearchParams(initData);
   const receivedHash = params.get("hash");
   const authDate = Number(params.get("auth_date"));
-  if (!receivedHash || !Number.isFinite(authDate)) return null;
+  if (!receivedHash || !/^[a-f0-9]{64}$/i.test(receivedHash) || !Number.isSafeInteger(authDate) || authDate <= 0) return null;
+  if (new Set([...params.keys()]).size !== [...params.keys()].length) return null;
 
   const age = Math.floor(Date.now() / 1000) - authDate;
   if (age < -60 || age > maxAgeSeconds) return null;

@@ -1,5 +1,7 @@
 "use client";
 
+import { ResponsiveTable } from "@/components/responsive-table";
+
 import { FormEvent, useDeferredValue, useState } from "react";
 import Link from "next/link";
 import { Download, Plus, Search, UserRoundPlus } from "lucide-react";
@@ -76,7 +78,7 @@ export function ClientsView() {
         <SectionCard title="База клиентов" subtitle="Изменения сохраняются в облаке сразу после операции">
           {items.length === 0 ? <EmptyState title="Клиентов пока нет" description="Добавьте первого клиента, чтобы начать вести историю приёмов." action={<Button onClick={() => setModalOpen(true)}><Plus size={15} /> Добавить клиента</Button>} /> : (
             <div className="table-wrap">
-              <table className="data-table">
+              <ResponsiveTable className="data-table">
                 <thead><tr><th>Клиент</th><th>Последний визит</th><th>Посещения</th><th>Оплаты</th><th>Статус</th></tr></thead>
                 <tbody>{items.map((client, index) => (
                   <tr key={client.id}>
@@ -87,7 +89,7 @@ export function ClientsView() {
                     <td><StatusPill status={client.status.toLowerCase()} /></td>
                   </tr>
                 ))}</tbody>
-              </table>
+              </ResponsiveTable>
             </div>
           )}
           {data.pages > 1 ? <div className="pagination-bar"><button className="button button-secondary" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Назад</button><span>Страница {data.page} из {data.pages}</span><button className="button button-secondary" disabled={page >= data.pages} onClick={() => setPage((value) => Math.min(data.pages, value + 1))}>Далее</button></div> : null}

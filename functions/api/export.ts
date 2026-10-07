@@ -1,11 +1,8 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { metricSnapshot } from "./pnl";
-
-function csvValue(value: unknown): string {
-  const text = value === null || value === undefined ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
+import { csvValue } from "../../src/lib/format-csv";
+import { canExport } from "../../src/lib/permissions/export";
 
 function csv(headers: string[], rows: Array<Record<string, unknown>>): string {
   return `\uFEFF${headers.join(",")}\n${rows.map((row) => headers.map((header) => csvValue(row[header])).join(",")).join("\n")}\n`;
@@ -24,6 +21,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!hasCrmPermission(user, "exports.read")) return forbidden();
   const params = new URL(request.url).searchParams;
   const type = params.get("type") ?? "clients";
+  if (!canExport(user.role, type)) return forbidden("Нет доступа к этому виду экспорта");
   const from = params.get("from")?.trim();
   const to = params.get("to")?.trim();
   let headers: string[];
@@ -84,7 +82,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     filename = "stock-movements.csv";
   } else if (type === "purchases") {
     headers = ["purchaseId", "orderedAt", "receivedAt", "supplierName", "branchName", "status", "productName", "quantity", "receivedQuantity", "unitPrice", "totalAmount", "paymentMethod", "paid"];
-    const result = await env.DB.prepare(`SELECT pu.id AS purchaseId, pu.ordered_at AS orderedAt, pu.received_at AS receivedAt, s.name AS supplierName, b.name AS branchName, pu.status, p.name AS productName, pi.quantity, pi.received_quantity AS receivedQuantity, pi.unit_price AS unitPrice, pu.total_amount AS totalAmount, pu.payment_method AS paymentMethod, CASE WHEN pu.paid = 1 THEN 'yes' ELSE 'no' END AS paid FROM purchases pu INNER JOIN purchase_items pi ON pi.purchase_id = pu.id INNER JOIN products p ON p.id = pi.product_id LEFT JOIN suppliers s ON s.id = pu.supplier_id LEFT JOIN branches b ON b.id = pu.branch_id ORDER BY pu.ordered_at DESC LIMIT 10000`).all();
+    const result = await env.DB.prepare(`SELECT pu.id AS purchaseId, pu.order_date AS orderedAt, pu.delivery_date AS receivedAt, s.name AS supplierName, b.name AS branchName, pu.status, p.name AS productName, pi.ordered_quantity AS quantity, pi.received_quantity AS receivedQuantity, pi.unit_cost AS unitPrice, pu.total_amount AS totalAmount, pu.payment_method AS paymentMethod, pu.paid_amount AS paid FROM purchases pu INNER JOIN purchase_items pi ON pi.purchase_id = pu.id INNER JOIN products p ON p.id = pi.product_id LEFT JOIN suppliers s ON s.id = pu.supplier_id LEFT JOIN branches b ON b.id = pu.branch_id ORDER BY pu.order_date DESC LIMIT 10000`).all();
     rows = (result.results ?? []) as Array<Record<string, unknown>>;
     filename = "purchases.csv";
   } else if (type === "tasks") {

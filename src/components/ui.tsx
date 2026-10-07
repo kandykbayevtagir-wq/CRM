@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { ArrowDownRight, ArrowUpRight, MoreHorizontal } from "lucide-react";
+import type { ReactNode, ButtonHTMLAttributes } from "react";
+import { ArrowDownRight, ArrowUpRight, LoaderCircle } from "lucide-react";
 
 import { formatCurrency } from "@/lib/format";
 
@@ -32,15 +32,20 @@ export function Button({
   type = "button",
   onClick,
   disabled = false,
+  loading = false,
+  className = "",
+  ...props
 }: {
   children: ReactNode;
   variant?: "primary" | "secondary" | "ghost";
   type?: "button" | "submit" | "reset";
   onClick?: () => void;
   disabled?: boolean;
-}) {
+  loading?: boolean;
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClick">) {
   return (
-    <button className={`button button-${variant}`} type={type} onClick={onClick} disabled={disabled}>
+    <button {...props} className={`button button-${variant} ${className}`} type={type} onClick={onClick} disabled={disabled || loading} aria-busy={loading || undefined}>
+      {loading ? <LoaderCircle size={16} className="spin" aria-hidden="true" /> : null}
       {children}
     </button>
   );
@@ -66,7 +71,7 @@ export function SectionCard({
           <h2>{title}</h2>
           {subtitle ? <p>{subtitle}</p> : null}
         </div>
-        {action ? <div>{action}</div> : <MoreHorizontal size={19} strokeWidth={1.8} className="muted-icon" />}
+        {action ? <div>{action}</div> : null}
       </div>
       {children}
     </section>
@@ -96,7 +101,7 @@ export function MetricCard({
       <div className={`metric-change metric-change-${trend}`}>
         {trend === "up" ? <ArrowUpRight size={15} /> : trend === "down" ? <ArrowDownRight size={15} /> : null}
         <span>{change}</span>
-        <span className="metric-period">к прошлому месяцу</span>
+        {trend !== "neutral" ? <span className="metric-period">к предыдущему периоду</span> : null}
       </div>
     </div>
   );
@@ -121,12 +126,18 @@ const statusLabels: Record<string, string> = {
   calculated: "Рассчитан",
   closed: "Закрыт",
   pending: "На модерации",
+  queued: "В очереди",
   published: "Опубликован",
   hidden: "Скрыт",
+  archived: "В архиве", open: "Открыта", done: "Выполнена", ordered: "Заказано",
+  partially_received: "Частично получено", received: "Получено", processing: "Отправляется",
+  sent: "Отправлено", failed: "Ошибка", resolved: "Решено", ignored: "Пропущено", booked: "Записан",
+  low: "Низкий", normal: "Обычный", high: "Высокий", urgent: "Срочно", posted: "Проведено",
 };
 
 export function StatusPill({ status }: { status: string }) {
-  return <span className={`status-pill status-${status}`}>{statusLabels[status] ?? status}</span>;
+  const key = status.toLowerCase();
+  return <span className={`status-pill status-${key}`}>{statusLabels[key] ?? status}</span>;
 }
 
 export function Amount({ value, muted = false }: { value: number; muted?: boolean }) {

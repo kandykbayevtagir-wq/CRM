@@ -1,6 +1,9 @@
+import { localDate } from "../../../src/lib/appointments/schedule";
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
 import { findAvailableSlots } from "../../_lib/availability";
 import { reservationStatements } from "../../_lib/booking";
+import { assertUnchanged } from "../../_lib/transaction";
+import { auditStatement } from "../../_lib/audit";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, conflict, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
 
@@ -10,7 +13,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!isClient(user)) return forbidden();
   if (!user.clientId) return json({ ok: true, items: [] });
   const rows = await env.DB.prepare(`
-    SELECT a.id, a.starts_at AS startsAt, a.status, a.total_amount AS amount, a.notes,
+    SELECT a.id, a.starts_at AS startsAt, a.ends_at AS endsAt, a.status, a.total_amount AS amount,
       c.full_name AS clientName, c.phone AS clientPhone,
       (SELECT aps.service_id FROM appointment_services aps WHERE aps.appointment_id = a.id LIMIT 1) AS serviceId,
       (SELECT s.name FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id LIMIT 1) AS serviceName,
@@ -53,10 +56,17 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   if (new Date(startsAt).getTime() <= Date.now()) return badRequest("Нельзя записаться на прошедшее время");
 
   const existing = appointmentId
-    ? await env.DB.prepare("SELECT id, status, starts_at AS startsAt FROM appointments WHERE id = ? AND client_id = ?").bind(appointmentId, user.clientId).first<{ id: string; status: string; startsAt: string }>()
+    ? await env.DB.prepare("SELECT id, revision, status, starts_at AS startsAt FROM appointments WHERE id = ? AND client_id = ?").bind(appointmentId, user.clientId).first<{ id: string; revision: number; status: string; startsAt: string }>()
     : null;
-  if (appointmentId && (!existing || ["COMPLETED", "CANCELLED", "NO_SHOW"].includes(existing.status))) return badRequest("Эту запись уже нельзя перенести");
-  const date = startsAt.slice(0, 10);
+  if (appointmentId && (!existing || !["SCHEDULED", "CONFIRMED"].includes(existing.status))) return badRequest("Эту запись уже нельзя перенести");
+  if (existing) {
+    const settings = await env.DB.prepare("SELECT cancellation_window_hours AS hours FROM organization_settings WHERE id = 1").first<{ hours: number }>();
+    if (new Date(existing.startsAt).getTime() - Date.now() < Number(settings?.hours ?? 2) * 3600000) return badRequest("Для переноса ближайшей записи свяжитесь с администратором");
+    const paid = await env.DB.prepare("SELECT 1 FROM payments WHERE appointment_id = ? LIMIT 1").bind(existing.id).first();
+    if (paid) return badRequest("Для переноса оплаченной записи свяжитесь с администратором");
+  }
+  const organization = await env.DB.prepare("SELECT timezone FROM organization_settings WHERE id = 1").first<{ timezone: string }>();
+  const date = localDate(startsAt, organization?.timezone || "Asia/Almaty");
   let slots;
   try {
     slots = await findAvailableSlots(env.DB, { date, branchId, serviceId, employeeId, excludeAppointmentId: appointmentId || undefined });
@@ -75,6 +85,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const changed = Boolean(existing);
   const appointmentStatements: D1PreparedStatement[] = existing
     ? [
+        ...assertUnchanged(env.DB, "appointments", existing.id, existing.revision),
         env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, ends_at = ?, status = 'SCHEDULED', source = 'TELEGRAM', total_amount = ?, cancel_reason = NULL, cancelled_at = NULL, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.endsAt, slot.price, user.id, id),
         env.DB.prepare("DELETE FROM appointment_services WHERE appointment_id = ?").bind(id),
         env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, serviceId, slot.price, service.durationMinutes),
@@ -107,9 +118,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
     .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {
-    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement]);
+    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
+      auditStatement(env.DB, user, "appointment", id, changed ? "RESCHEDULE" : "CREATE", existing, { startsAt, serviceId, branchId, employeeId }),
+    ]);
   } catch (cause) {
     const databaseMessage = cause instanceof Error ? cause.message : "";
+    if (/mutation_precondition/.test(databaseMessage)) return conflict("Запись уже изменилась. Обновите список записей.");
     if (idempotencyKey) {
       const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
         .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();

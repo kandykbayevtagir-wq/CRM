@@ -1,5 +1,7 @@
 "use client";
 
+import { ResponsiveTable } from "@/components/responsive-table";
+
 import { FormEvent, useDeferredValue, useMemo, useState } from "react";
 import { CalendarDays, Check, Download, Play, Plus, QrCode, ScanLine, Search, UserCheck, XCircle } from "lucide-react";
 
@@ -9,18 +11,17 @@ import { Amount, Avatar, Button, PageHeader, SectionCard, StatusPill } from "@/c
 import type { AppointmentRecord, Branch, ClientRecord, EmployeeRecord, ServiceRecord } from "@/lib/crm-types";
 import { dateInputValue, formatDateTime, initials } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
+import { useOperationKey } from "@/lib/use-operation-key";
 
 type AppointmentResponse = { ok: true; items: AppointmentRecord[] };
-type BranchResponse = { ok: true; items: Branch[] };
-type EmployeeResponse = { ok: true; items: EmployeeRecord[] };
-type ClientResponse = { ok: true; items: ClientRecord[]; total: number };
-type ServiceResponse = { ok: true; items: ServiceRecord[] };
 
 function statusKey(status: string) {
   return status.toLowerCase();
 }
 
 export function AppointmentsView() {
+  const bookingKey = useOperationKey();
+  const paymentKey = useOperationKey();
   const [query, setQuery] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,10 +58,11 @@ export function AppointmentsView() {
   if (statusFilter) appointmentParams.set("status", statusFilter);
   const path = `/api/appointments?${appointmentParams.toString()}`;
   const { data, loading, error, reload } = useApi<AppointmentResponse>(path);
-  const { data: branches } = useApi<BranchResponse>("/api/branches");
-  const { data: employees } = useApi<EmployeeResponse>("/api/employees");
-  const { data: clients } = useApi<ClientResponse>("/api/clients?status=active&pageSize=100");
-  const { data: services } = useApi<ServiceResponse>("/api/services");
+  const { data: catalog } = useApi<{ branches: Branch[]; employees: EmployeeRecord[]; clients: ClientRecord[]; services: ServiceRecord[] }>("/api/appointment-catalog");
+  const branches = { items: catalog?.branches ?? [] };
+  const employees = { items: catalog?.employees ?? [] };
+  const clients = { items: catalog?.clients ?? [] };
+  const services = { items: catalog?.services ?? [] };
   const items = data?.items ?? [];
   const completed = items.filter((item) => statusKey(item.status) === "completed").length;
   const expected = items.filter((item) => !["cancelled", "no_show"].includes(statusKey(item.status))).reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -71,7 +73,8 @@ export function AppointmentsView() {
     setFormError(null);
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
     try {
-      await apiFetch("/api/appointments", { method: "POST", body: values });
+      await apiFetch("/api/appointments", { method: "POST", body: { ...values, idempotencyKey: bookingKey.get(values) } });
+      bookingKey.reset();
       setModalOpen(false);
       dispatchCrmEvent("crm:data-changed");
       await reload();
@@ -129,7 +132,9 @@ export function AppointmentsView() {
     setPaymentSaving(true);
     try {
       const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-      await apiFetch("/api/payments", { method: "POST", body: { ...values, appointmentId: paymentAppointment.id, idempotencyKey: crypto.randomUUID() } });
+      const body = { ...values, appointmentId: paymentAppointment.id };
+      await apiFetch("/api/payments", { method: "POST", body: { ...body, idempotencyKey: paymentKey.get(body) } });
+      paymentKey.reset();
       setPaymentAppointment(null);
       dispatchCrmEvent("crm:data-changed");
       await reload();
@@ -209,7 +214,7 @@ export function AppointmentsView() {
         <SectionCard title="Расписание" subtitle="Создавайте и завершайте приёмы без ручной синхронизации" action={<span className="icon-button"><CalendarDays size={18} /></span>}>
           {items.length === 0 ? <EmptyState title="Записей пока нет" description="Добавьте первый приём — клиент автоматически появится в базе." action={<Button onClick={() => setModalOpen(true)}><Plus size={15} /> Добавить запись</Button>} /> : (
             <div className="table-wrap">
-              <table className="data-table">
+              <ResponsiveTable className="data-table">
                 <thead><tr><th>Дата и время</th><th>Клиент</th><th>Специалист</th><th>Филиал</th><th>Статус</th><th>Сумма</th><th /></tr></thead>
                 <tbody>{items.map((appointment, index) => {
                   const currentStatus = statusKey(appointment.status);
@@ -223,7 +228,7 @@ export function AppointmentsView() {
                     <td><div className="appointment-actions">{!["cancelled", "no_show", "completed"].includes(currentStatus) ? <><button className="inline-action" onClick={() => void showAppointmentCode(appointment.id)} title="Показать код check-in"><QrCode size={13} /> Код</button>{currentStatus === "scheduled" ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "CONFIRMED")} disabled={updatingId === appointment.id} title="Подтвердить запись"><Check size={14} /> Подтвердить</button> : null}{["scheduled", "confirmed"].includes(currentStatus) ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "ARRIVED")} disabled={updatingId === appointment.id} title="Отметить пришедшим"><UserCheck size={14} /> Пришёл</button> : null}{currentStatus === "arrived" ? <button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "IN_PROGRESS")} disabled={updatingId === appointment.id} title="Начать приём"><Play size={14} /> Начать</button> : null}{currentStatus === "in_progress" ? <button className="inline-action" onClick={() => { setFollowUpDays("30"); setFollowUpAppointment(appointment); }} disabled={updatingId === appointment.id} title="Завершить приём"><Check size={14} /> {updatingId === appointment.id ? "…" : "Завершить"}</button> : null}<button className="inline-action" onClick={() => void transitionAppointment(appointment.id, "CANCELLED")} disabled={updatingId === appointment.id} title="Отменить запись"><XCircle size={14} /> Отменить</button>{Number(appointment.balance ?? Number(appointment.amount || 0) - Number(appointment.paidAmount || 0)) > 0 ? <button className="inline-action" onClick={() => { setFormError(null); setPaymentAppointment(appointment); }} title="Принять оплату">Оплата</button> : null}</> : null}</div></td>
                   </tr>;
                 })}</tbody>
-              </table>
+              </ResponsiveTable>
             </div>
           )}
         </SectionCard>

@@ -19,7 +19,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "dashboard.read")) return forbidden();
-  const settings = await env.DB.prepare("SELECT timezone FROM organization_settings WHERE id = 1").first<{ timezone: string }>();
+  const settings = await env.DB.prepare("SELECT timezone, booking_start_time AS startTime, booking_end_time AS endTime, working_days AS workingDays FROM organization_settings WHERE id = 1").first<{ timezone: string; startTime: string; endTime: string; workingDays: string }>();
   const { key, from, to } = monthRange();
   const branchId = new URL(request.url).searchParams.get("branchId")?.trim() ?? "";
   const ownEmployee = user.role === "SPECIALIST"
@@ -59,7 +59,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const grossRevenue = Number(revenue?.value ?? 0);
   const refundAmount = Number(refunds?.value ?? 0);
   const netRevenue = grossRevenue - refundAmount;
-  const availableWorkingMinutes = calculateAvailableWorkingMinutes(schedules.results ?? [], timeOff.results ?? [], new Date(from), new Date(to), settings?.timezone ?? "Asia/Almaty");
+  const availableWorkingMinutes = calculateAvailableWorkingMinutes(schedules.results ?? [], timeOff.results ?? [], new Date(from), new Date(to), settings?.timezone ?? "Asia/Almaty", settings ?? {});
   const occupiedMinutes = Math.max(0, Math.round(Number(occupied?.value ?? 0)));
   const completedAppointments = await env.DB.prepare(`SELECT COUNT(*) AS value FROM appointments a WHERE strftime('%Y-%m', a.starts_at, 'localtime') = ? AND a.status = 'COMPLETED'${employeeScope}${branchScope}`).bind(key, ...employeeBinding, ...branchBinding).first<CountRow>();
   const revenueDays = new Map<string, number>();

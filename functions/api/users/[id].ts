@@ -28,6 +28,8 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   await env.DB.batch([
     env.DB.prepare("UPDATE users SET name = ?, role = ?, active = ?, client_id = ?, phone = COALESCE(?, phone), updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(stringValue(body, "name", existing.name), role, active, clientId, body.phone === null ? null : stringValue(body, "phone") || null, id),
     auditStatement(env.DB, user, "user", id, "UPDATE", { role: existing.role, active: existing.active }, { role, active }),
+    ...(existing.role !== role || existing.active !== active || existing.clientId !== clientId
+      ? [env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id)] : []),
   ]);
   return json({ ok: true });
 };

@@ -1,5 +1,7 @@
 "use client";
 
+import { ResponsiveTable } from "@/components/responsive-table";
+
 import { FormEvent, useState } from "react";
 import { Download, Plus, UserRoundPlus } from "lucide-react";
 
@@ -84,11 +86,11 @@ export function EmployeesView() {
           </section>
 
           <SectionCard title="Расчёт зарплаты" subtitle="Предварительный прогноз · период можно закрыть после проверки">
-            <div className="table-wrap"><table className="data-table"><thead><tr><th>Сотрудник</th><th>Фиксированная часть</th><th>Процент с выручки</th><th>Приёмов</th><th>Прогноз итого</th></tr></thead><tbody>{items.map((employee, index) => {
+            <div className="table-wrap"><ResponsiveTable className="data-table"><thead><tr><th>Сотрудник</th><th>Фиксированная часть</th><th>Процент с выручки</th><th>Приёмов</th><th>Прогноз итого</th></tr></thead><tbody>{items.map((employee, index) => {
               const percentAmount = Number(employee.revenue || 0) * Number(employee.revenuePercent || 0) / 100;
               const forecast = Number(employee.fixedSalary || 0) + percentAmount;
               return <tr key={employee.id}><td><div className="employee-cell"><Avatar initials={initials(employee.fullName)} tone={tones[index % tones.length]} /><div><strong>{employee.fullName}</strong><span>{employee.position}</span></div></div></td><td><Amount value={Number(employee.fixedSalary || 0)} muted /></td><td><Amount value={percentAmount} muted /></td><td>{Number(employee.appointments || 0)}</td><td><Amount value={forecast} /></td></tr>;
-            })}</tbody></table></div>
+            })}</tbody></ResponsiveTable></div>
           </SectionCard>
         </>}
       </> : null}

@@ -23,9 +23,9 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     env.DB.prepare(`SELECT services.id, services.name AS title, services.category AS subtitle FROM services WHERE services.is_active = 1 AND (services.name LIKE ? OR services.category LIKE ?)${serviceScope} ORDER BY services.name LIMIT 8`).bind(...(user.role === "SPECIALIST" ? [like, like, ownEmployeeId] : [like, like])).all(),
   ]);
   return json({ ok: true, query, results: [
-    ...(clients.results ?? []).map((row) => ({ ...row, type: "client", href: `/clients/${row.id}` })),
-    ...(appointments.results ?? []).map((row) => ({ ...row, type: "appointment", href: `/appointments?focus=${row.id}` })),
-    ...(employees.results ?? []).map((row) => ({ ...row, type: "employee", href: `/employees/${row.id}` })),
-    ...(services.results ?? []).map((row) => ({ ...row, type: "service", href: `/services?focus=${row.id}` })),
+    ...(hasCrmPermission(user, "clients.read") ? clients.results ?? [] : []).map((row) => ({ ...row, type: "client", href: `/clients/${row.id}` })),
+    ...(hasCrmPermission(user, "appointments.read") ? appointments.results ?? [] : []).map((row) => ({ ...row, type: "appointment", href: `/appointments?focus=${row.id}` })),
+    ...(hasCrmPermission(user, "employees.read") ? employees.results ?? [] : []).map((row) => ({ ...row, type: "employee", href: `/employees?focus=${row.id}` })),
+    ...(hasCrmPermission(user, "services.read") ? services.results ?? [] : []).map((row) => ({ ...row, type: "service", href: `/services?focus=${row.id}` })),
   ] });
 };

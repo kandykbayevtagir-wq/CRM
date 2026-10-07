@@ -1,72 +1,36 @@
-type ScheduleRow = {
-  employeeId: string;
-  dayOfWeek: number;
-  startsTime: string;
-  endsTime: string;
-  breakStartTime: string | null;
-  breakEndTime: string | null;
-};
+import { localDate, localDayRange } from "../../src/lib/appointments/schedule";
 
+type ScheduleRow = { employeeId: string; dayOfWeek: number; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null };
 type TimeOffRow = { employeeId: string; startsAt: string; endsAt: string };
+type WorkingPolicy = { startTime?: string; endTime?: string; workingDays?: string };
 
-function timeMinutes(value: string): number {
-  const [hours, minutes] = value.split(":").map(Number);
-  return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
-}
-
-function timezoneOffset(date: string, timezone: string): string {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longOffset", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(`${date}T12:00:00.000Z`));
-    const value = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT+00:00";
-    if (value === "GMT") return "+00:00";
-    const match = value.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-    return match ? `${match[1]}${match[2].padStart(2, "0")}:${match[3] ?? "00"}` : "+00:00";
-  } catch {
-    return "+00:00";
-  }
-}
-
-function atLocal(date: string, minutes: number, timezone: string): number {
-  const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
-  const remainder = (minutes % 60).toString().padStart(2, "0");
-  return new Date(`${date}T${hours}:${remainder}:00${timezoneOffset(date, timezone)}`).getTime();
-}
-
-function dateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-export function calculateAvailableWorkingMinutes(
-  schedules: ScheduleRow[],
-  timeOff: TimeOffRow[],
-  from: Date,
-  to: Date,
-  timezone: string,
-): number {
-  const scheduleByDay = new Map<number, ScheduleRow[]>();
-  for (const row of schedules) {
-    const rows = scheduleByDay.get(row.dayOfWeek) ?? [];
-    rows.push(row);
-    scheduleByDay.set(row.dayOfWeek, rows);
-  }
-  const totalDays = Math.max(0, Math.ceil((to.getTime() - from.getTime()) / 86_400_000));
+export function calculateAvailableWorkingMinutes(schedules: ScheduleRow[], timeOff: TimeOffRow[], from: Date, to: Date, timezone: string, policy: WorkingPolicy = {}) {
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) return 0;
+  const firstDate = localDate(from, timezone);
+  const lastDate = localDate(new Date(to.getTime() - 1), timezone);
+  const days = Math.round((Date.parse(lastDate + "T12:00:00Z") - Date.parse(firstDate + "T12:00:00Z")) / 86400000) + 1;
   let total = 0;
-  for (let index = 0; index < totalDays; index += 1) {
-    const date = new Date(from.getTime() + index * 86_400_000);
-    const key = dateKey(date);
-    const day = date.getUTCDay() === 0 ? 7 : date.getUTCDay();
-    for (const schedule of scheduleByDay.get(day) ?? []) {
-      const shiftStart = atLocal(key, timeMinutes(schedule.startsTime), timezone);
-      const shiftEnd = atLocal(key, timeMinutes(schedule.endsTime), timezone);
-      let available = Math.max(0, shiftEnd - shiftStart) / 60_000;
-      if (schedule.breakStartTime && schedule.breakEndTime) available -= Math.max(0, atLocal(key, timeMinutes(schedule.breakEndTime), timezone) - atLocal(key, timeMinutes(schedule.breakStartTime), timezone)) / 60_000;
-      for (const absence of timeOff) {
-        const absenceStart = new Date(absence.startsAt).getTime();
-        const absenceEnd = new Date(absence.endsAt).getTime();
-        const overlap = Math.max(0, Math.min(shiftEnd, absenceEnd) - Math.max(shiftStart, absenceStart)) / 60_000;
-        if (absence.employeeId === schedule.employeeId) available -= overlap;
+  const timeMinutes = (value: string) => { const [hour,minute] = value.split(":").map(Number); return hour * 60 + minute; };
+  for (let index = 0; index < days; index++) {
+    const date = new Date(Date.parse(firstDate + "T12:00:00Z") + index * 86400000).toISOString().slice(0,10);
+    const day = new Date(date + "T12:00:00Z").getUTCDay() || 7;
+    if (policy.workingDays && !policy.workingDays.split(",").map(Number).includes(day)) continue;
+    const dayStart = Date.parse(localDayRange(date,timezone).from);
+    const at = (value: string) => dayStart + timeMinutes(value) * 60000;
+    for (const shift of schedules.filter((value) => value.dayOfWeek === day)) {
+      const start = Math.max(at(shift.startsTime), policy.startTime ? at(policy.startTime) : -Infinity, from.getTime());
+      const end = Math.min(at(shift.endsTime), policy.endTime ? at(policy.endTime) : Infinity, to.getTime());
+      if (end <= start) continue;
+      const blocked = timeOff.filter((absence) => absence.employeeId === shift.employeeId).map((absence) => [Date.parse(absence.startsAt),Date.parse(absence.endsAt)]);
+      if (shift.breakStartTime && shift.breakEndTime) blocked.push([at(shift.breakStartTime),at(shift.breakEndTime)]);
+      const clipped = blocked.map(([left,right]) => [Math.max(start,left),Math.min(end,right)]).filter(([left,right]) => right > left).sort((a,b) => a[0] - b[0]);
+      let unavailable = 0; let left = -Infinity; let right = -Infinity;
+      for (const [nextLeft,nextRight] of clipped) {
+        if (nextLeft > right) { if (right > left) unavailable += right - left; left = nextLeft; right = nextRight; }
+        else right = Math.max(right,nextRight);
       }
-      total += Math.max(0, available);
+      if (right > left) unavailable += right - left;
+      total += (end - start - unavailable) / 60000;
     }
   }
   return Math.round(total);

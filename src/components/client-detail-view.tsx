@@ -1,5 +1,7 @@
 "use client";
 
+import { ResponsiveTable } from "@/components/responsive-table";
+
 import Link from "next/link";
 import { ChevronLeft, Clock3, FileText, History, Phone, UserRound } from "lucide-react";
 import { AuthHint, EmptyState, ErrorState, isAuthError, LoadingState } from "@/components/data-state";
@@ -58,7 +60,7 @@ export function ClientDetailView({ clientId }: { clientId: string }) {
           </SectionCard>
         </div>
         <SectionCard title="История записей" subtitle={`${data.appointments.length} записей`}>
-          {data.appointments.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Дата</th><th>Услуга</th><th>Специалист</th><th>Статус</th><th>Оплата</th><th>Сумма</th></tr></thead><tbody>{data.appointments.map((item) => <tr key={item.id}><td>{formatDateTime(item.startsAt)}</td><td>{item.serviceName ?? "—"}<span className="table-secondary">{item.branchName ?? ""}</span></td><td>{item.employeeName ?? "—"}</td><td><StatusPill status={item.status.toLowerCase()} />{item.cancelReason ? <span className="table-secondary">{item.cancelReason}</span> : null}</td><td><Amount value={Number(item.paidAmount || 0)} /></td><td><Amount value={Number(item.amount || 0)} /></td></tr>)}</tbody></table></div> : <EmptyState title="История пока пустая" description="Записи клиента появятся здесь после создания первой записи." />}
+          {data.appointments.length ? <div className="table-wrap"><ResponsiveTable className="data-table"><thead><tr><th>Дата</th><th>Услуга</th><th>Специалист</th><th>Статус</th><th>Оплата</th><th>Сумма</th></tr></thead><tbody>{data.appointments.map((item) => <tr key={item.id}><td>{formatDateTime(item.startsAt)}</td><td>{item.serviceName ?? "—"}<span className="table-secondary">{item.branchName ?? ""}</span></td><td>{item.employeeName ?? "—"}</td><td><StatusPill status={item.status.toLowerCase()} />{item.cancelReason ? <span className="table-secondary">{item.cancelReason}</span> : null}</td><td><Amount value={Number(item.paidAmount || 0)} /></td><td><Amount value={Number(item.amount || 0)} /></td></tr>)}</tbody></ResponsiveTable></div> : <EmptyState title="История пока пустая" description="Записи клиента появятся здесь после создания первой записи." />}
         </SectionCard>
         <div className="dashboard-grid dashboard-grid-equal page-section">
           <SectionCard title="Платежи" subtitle="Проведённые операции"><div className="summary-list">{data.payments.length ? data.payments.map((payment) => <div className="summary-row" key={payment.id}><span><strong>{formatCurrency(Number(payment.amount || 0))}</strong><small className="table-secondary">{payment.method} · {formatDateTime(payment.paidAt)}</small></span><StatusPill status={payment.status.toLowerCase()} /></div>) : <EmptyState title="Оплат нет" description="Оплаты по завершённым приёмам будут отображаться здесь." />}</div></SectionCard>

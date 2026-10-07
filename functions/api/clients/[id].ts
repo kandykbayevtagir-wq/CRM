@@ -20,6 +20,18 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env, params
     if (!employee) return forbidden();
     const allowed = await env.DB.prepare("SELECT id FROM appointments WHERE client_id = ? AND employee_id = ? LIMIT 1").bind(id, employee.id).first();
     if (!allowed) return forbidden();
+    const client = await env.DB.prepare(`SELECT c.id, c.full_name AS fullName, c.phone, c.email, c.created_at AS createdAt,
+      c.is_active AS isActive, NULL AS notes, NULL AS total,
+      COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) AS visits,
+      MAX(CASE WHEN a.status = 'COMPLETED' THEN a.starts_at END) AS lastVisit,
+      MIN(CASE WHEN julianday(a.starts_at) > julianday('now') AND a.status IN ('SCHEDULED','CONFIRMED') THEN a.starts_at END) AS nextVisit
+      FROM clients c LEFT JOIN appointments a ON a.client_id = c.id AND a.employee_id = ? WHERE c.id = ? GROUP BY c.id`).bind(employee.id, id).first();
+    const appointments = await env.DB.prepare(`SELECT a.id, a.starts_at AS startsAt, a.status, a.notes, a.cancel_reason AS cancelReason,
+      e.full_name AS employeeName, b.name AS branchName,
+      (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName
+      FROM appointments a JOIN employees e ON e.id = a.employee_id JOIN branches b ON b.id = a.branch_id
+      WHERE a.client_id = ? AND a.employee_id = ? ORDER BY a.starts_at DESC LIMIT 100`).bind(id, employee.id).all();
+    return json({ ok: true, restricted: true, client, appointments: appointments.results ?? [], payments: [], timeline: [] });
   }
   const client = await env.DB.prepare(`
     SELECT c.id, c.full_name AS fullName, c.phone, c.email, c.notes, c.created_at AS createdAt,

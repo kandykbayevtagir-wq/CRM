@@ -41,6 +41,12 @@ if (chatId) {
 await telegram("setMyCommands", {
   commands: [
     { command: "start", description: "Открыть CRM" },
+    { command: "book", description: "Записаться на приём" },
+    { command: "appointments", description: "Ближайшие визиты" },
+    { command: "profile", description: "Профиль и напоминания" },
+    { command: "bonuses", description: "Бонусы" },
+    { command: "today", description: "Сегодня — для сотрудников" },
+    { command: "contact", description: "Контакты центра" },
     { command: "help", description: "Помощь" },
   ],
 });

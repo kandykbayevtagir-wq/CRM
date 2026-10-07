@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { scheduleConflict } from "../_lib/schedule";
 
 import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
@@ -68,7 +69,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (branchId) { filters.push("a.branch_id = ?"); bindings.push(branchId); }
   if (employeeId && !ownId) { filters.push("a.employee_id = ?"); bindings.push(employeeId); }
   if (status && isAppointmentStatus(status)) { filters.push("a.status = ?"); bindings.push(status); }
-  if (query) { filters.push("(c.full_name LIKE ? OR c.phone LIKE ? OR c.phone_normalized LIKE ?)"); bindings.push(`%${query}%`, `%${query}%`, `%${normalizePhone(query)}%`); }
+  if (query) { filters.push("(c.full_name LIKE ? OR c.phone LIKE ? OR c.phone_normalized LIKE ?)"); bindings.push(`%${query}%`, `%${query}%`, `%${normalizePhone(query) || query}%`); }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const [result, count] = await Promise.all([
     env.DB.prepare(`${appointmentSelect} ${where} ORDER BY a.starts_at DESC LIMIT ? OFFSET ?`).bind(...bindings, pageSize, (page - 1) * pageSize).all(),
@@ -89,7 +90,15 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const clientIdFromBody = optionalString(body, "clientId");
   const clientName = stringValue(body, "clientName");
   const clientPhoneRaw = stringValue(body, "clientPhone");
-  const serviceIds = serviceIdsFromBody(body);
+  const serviceIds = [...new Set(serviceIdsFromBody(body))];
+  if (serviceIds.length > 20) return badRequest("В одну запись можно добавить не более 20 услуг");
+  const idempotencyKey = stringValue(body, "idempotencyKey");
+  if (idempotencyKey.length > 128) return badRequest("Некорректный ключ операции");
+  const requestHash = JSON.stringify([startsAt, branchId, employeeId, clientIdFromBody, clientName, clientPhoneRaw, [...serviceIds].sort(), body.notes ?? null, body.status ?? "SCHEDULED"]);
+  if (idempotencyKey) {
+    const replay = await env.DB.prepare("SELECT appointment_id AS id, request_hash AS requestHash FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ?").bind(idempotencyKey, user.id).first<{ id: string; requestHash: string }>();
+    if (replay) return replay.requestHash === requestHash ? json({ ok: true, id: replay.id, replayed: true }) : conflict("Этот ключ уже использован для другой записи");
+  }
   const ownId = await ownEmployeeId(env, user.id, user.role);
   if (!startsAt || !branchId || !employeeId || !serviceIds.length || (user.role === "SPECIALIST" && employeeId !== ownId)) return badRequest("Дата, филиал, специалист, клиент и услуги обязательны");
 
@@ -130,6 +139,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const endsAt = new Date(startMs + duration * 60_000).toISOString();
   if (!Number.isFinite(startMs) || startMs <= Date.now() - 5 * 60_000) return badRequest("Время записи должно быть в будущем");
 
+  const scheduleError = await scheduleConflict(env.DB, employeeId, branchId, startsAt, endsAt);
+  if (scheduleError) return badRequest(scheduleError);
   const conflictRow = await env.DB.prepare(`
     SELECT id FROM appointments
     WHERE employee_id = ? AND status NOT IN ('CANCELLED', 'NO_SHOW')
@@ -159,7 +170,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     statements.push(env.DB.prepare("UPDATE follow_ups SET status = 'BOOKED', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, clientId));
     const reminders: Array<readonly [string, Date]> = [["REMINDER_24H", reminder24], ["REMINDER_2H", reminder2]];
     for (const [kind, scheduledAt] of reminders) {
-      if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)").bind(newId(), clientId, id, kind, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id })));
+      if (scheduledAt.getTime() > Date.now()) statements.push(env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, (SELECT id FROM users WHERE client_id = ? AND active = 1 LIMIT 1), ?, ?, ?, ?, ?)").bind(newId(), clientId, clientId, id, kind, scheduledAt.toISOString(), JSON.stringify({ appointmentId: id, startsAt })));
     }
     const recipient = await env.DB.prepare(`
       SELECT u.telegram_id AS telegramId, u.notifications_allowed AS notificationsAllowed, c.full_name AS clientName
@@ -172,10 +183,15 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
     }
   }
   try {
+    if (idempotencyKey) statements.push(env.DB.prepare("INSERT INTO booking_idempotency_keys(idempotency_key, user_id, appointment_id, request_hash) VALUES(?, ?, ?, ?)").bind(idempotencyKey, user.id, id, requestHash));
     await env.DB.batch(statements);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "";
-    if (/unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
+    if (idempotencyKey) {
+      const replay = await env.DB.prepare("SELECT appointment_id AS id, request_hash AS requestHash FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ?").bind(idempotencyKey, user.id).first<{ id: string; requestHash: string }>();
+      if (replay && replay.requestHash === requestHash) return json({ ok: true, id: replay.id, replayed: true });
+    }
+    if (/CRM_SLOT_UNAVAILABLE|unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
     return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);
   }
   return json({ ok: true, id, startsAt, endsAt, totalAmount: total.toFixed(2) }, 201);

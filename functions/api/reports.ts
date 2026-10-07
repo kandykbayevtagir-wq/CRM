@@ -59,7 +59,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     env.DB.prepare(`SELECT COALESCE(SUM((julianday(a.ends_at) - julianday(a.starts_at)) * 1440), 0) AS value FROM appointments a WHERE a.status NOT IN ('CANCELLED', 'NO_SHOW') AND a.ends_at IS NOT NULL AND ${appointmentWhere}`).bind(...appointmentBindings).first<{ value: number }>(),
     env.DB.prepare("SELECT employee_id AS employeeId, day_of_week AS dayOfWeek, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE is_active = 1").all<{ employeeId: string; dayOfWeek: number; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
     env.DB.prepare("SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE ends_at >= ? AND starts_at < ?").bind(from, to).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
-    env.DB.prepare("SELECT timezone FROM organization_settings WHERE id = 1").first<{ timezone: string }>(),
+    env.DB.prepare("SELECT timezone, booking_start_time AS startTime, booking_end_time AS endTime, working_days AS workingDays FROM organization_settings WHERE id = 1").first<{ timezone: string; startTime: string; endTime: string; workingDays: string }>(),
   ]);
   const revenue = Number(grossRevenue?.value ?? 0) - Number(refunds?.value ?? 0);
   const expenseAmount = Number(expenses?.value ?? 0);
@@ -67,7 +67,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const profit = revenue - expenseAmount - salaryFund;
   let scopedSchedules = schedules.results ?? [];
   if (employeeId) scopedSchedules = scopedSchedules.filter((row) => row.employeeId === employeeId);
-  const availableMinutes = calculateAvailableWorkingMinutes(scopedSchedules, timeOff.results ?? [], start, end, settings?.timezone ?? "Asia/Almaty");
+  const availableMinutes = calculateAvailableWorkingMinutes(scopedSchedules, timeOff.results ?? [], start, end, settings?.timezone ?? "Asia/Almaty", settings ?? {});
   const occupiedMinutes = Number(occupied?.value ?? 0);
   const completed = Number(appointmentCounts?.completed ?? 0);
   const uniqueClients = Number(appointmentCounts?.uniqueClients ?? 0);

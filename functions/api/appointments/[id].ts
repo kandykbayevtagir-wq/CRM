@@ -1,9 +1,11 @@
+import { scheduleConflict } from "../../_lib/schedule";
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { prepareAppointmentConsumption } from "../../_lib/inventory";
-import { awardLoyaltyPoints } from "../../_lib/loyalty";
-import { reservationStatements } from "../../_lib/booking";
+import { loyaltyAwardStatement } from "../../_lib/loyalty";
+import { reservationStatements, appointmentReminderStatements } from "../../_lib/booking";
+import { assertUnchanged } from "../../_lib/transaction";
 import { badRequest, conflict, dateValue, json, newId, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
 import { canTransitionAppointment, isAppointmentStatus } from "../../../src/lib/appointments/transitions";
 
@@ -21,10 +23,11 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   if (user.role === "SPECIALIST" && (!ownEmployee || String(existing.employee_id ?? "") !== ownEmployee.id)) return forbidden("Специалист может изменять только свои записи");
 
   const body = await readJson(request);
+  if (typeof body.revision === "number" && body.revision !== Number(existing.revision)) return conflict("Запись уже изменилась. Обновите экран.");
   const previousStatus = String(existing.status ?? "SCHEDULED").toUpperCase();
   const requestedStatus = stringValue(body, "status", previousStatus).toUpperCase();
   if (!isAppointmentStatus(requestedStatus)) return badRequest("Некорректный статус записи");
-  const administrativeOverride = user.role === "OWNER" && body.administrativeOverride === true;
+  const administrativeOverride = false;
   if (!canTransitionAppointment(previousStatus, requestedStatus, administrativeOverride)) return badRequest(`Нельзя перевести запись из ${previousStatus} в ${requestedStatus}`);
 
   const incomingDate = dateValue(body, "startsAt") || String(existing.starts_at ?? "");
@@ -50,6 +53,12 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     `).bind(employeeId, ...serviceIdsList, branchId).first<{ count: number }>();
     if (Number(eligible?.count ?? 0) !== serviceIdsList.length) return badRequest("Специалист не оказывает одну из услуг в выбранном филиале");
   }
+  const moved = incomingDate !== existing.starts_at || incomingEnds !== existing.ends_at || employeeId !== existing.employee_id || branchId !== existing.branch_id;
+  if (moved && previousStatus === "COMPLETED") return badRequest("Время и специалист завершённого приёма зафиксированы");
+  if (moved) {
+    const scheduleError = await scheduleConflict(env.DB, employeeId, branchId, incomingDate, incomingEnds);
+    if (scheduleError) return badRequest(scheduleError);
+  }
   const overlapping = await env.DB.prepare(`
     SELECT id FROM appointments WHERE id <> ? AND employee_id = ? AND status NOT IN ('CANCELLED', 'NO_SHOW')
       AND starts_at < ? AND COALESCE(ends_at, datetime(starts_at, '+60 minutes')) > ? LIMIT 1
@@ -60,6 +69,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     ? ((optionalString(body, "cancelReason") ?? String(existing.cancel_reason ?? "")) || "Без причины")
     : null;
   const statements: D1PreparedStatement[] = [
+    ...assertUnchanged(env.DB, "appointments", appointmentId, Number(existing.revision)),
     env.DB.prepare(`UPDATE appointments SET starts_at = ?, ends_at = ?, employee_id = ?, branch_id = ?, status = ?, notes = ?, cancel_reason = ?, cancelled_at = CASE WHEN ? IN ('CANCELLED', 'NO_SHOW') THEN COALESCE(cancelled_at, CURRENT_TIMESTAMP) ELSE NULL END, confirmed_at = CASE WHEN ? = 'CONFIRMED' THEN COALESCE(confirmed_at, CURRENT_TIMESTAMP) ELSE confirmed_at END, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .bind(incomingDate, incomingEnds, employeeId, branchId, requestedStatus, body.notes === null ? null : optionalString(body, "notes") ?? existing.notes ?? null, cancelReason, requestedStatus, requestedStatus, user.id, appointmentId),
     env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, ?, ?, ?)").bind(newId(), appointmentId, previousStatus, requestedStatus, user.id, cancelReason),
@@ -81,9 +91,21 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
       .bind(newId(), `appointment:${appointmentId}:status:${requestedStatus}`, clientRecipient.telegramId, requestedStatus === "COMPLETED" ? "VISIT_COMPLETED" : "BOOKING_CANCELLED", JSON.stringify({ clientName: clientRecipient.clientName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(startsAt), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(startsAt), specialist: clientRecipient.specialist ?? "Специалист", service: clientRecipient.service ?? "Приём", branch: clientRecipient.branch ?? "Филиал", message: requestedStatus === "NO_SHOW" ? "Клиент не пришёл" : (cancelReason ?? "" ) })));
   }
   const inventory = requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED"
-    ? await prepareAppointmentConsumption(env.DB, appointmentId)
+    ? await prepareAppointmentConsumption(env.DB, appointmentId, user.id)
     : { statements: [] as D1PreparedStatement[], warnings: [] };
   statements.push(...inventory.statements);
+  if (requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED") statements.push(loyaltyAwardStatement(env.DB, appointmentId));
+  if (requestedStatus === "CANCELLED" || requestedStatus === "NO_SHOW" || moved) statements.push(env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(appointmentId));
+  if (moved && ["SCHEDULED","CONFIRMED"].includes(requestedStatus)) {
+    statements.push(...appointmentReminderStatements(env.DB,appointmentId,String(existing.client_id),incomingDate));
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO message_outbox(id,event_key,telegram_id,template_key,payload_json)
+      SELECT ?, ?, u.telegram_id, 'BOOKING_CHANGED', json_object('appointmentId',a.id,'startsAt',a.starts_at,
+        'clientName',c.full_name,'specialist',e.full_name,'branch',b.name,'timezone',os.timezone,
+        'service',(SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id=aps.service_id WHERE aps.appointment_id=a.id))
+      FROM appointments a JOIN clients c ON c.id=a.client_id JOIN users u ON u.client_id=c.id AND u.active=1 AND u.notifications_allowed=1
+      LEFT JOIN employees e ON e.id=a.employee_id LEFT JOIN branches b ON b.id=a.branch_id CROSS JOIN organization_settings os
+      WHERE a.id=? AND os.id=1`).bind(newId(),`appointment:${appointmentId}:changed:${Number(existing.revision)+1}`,appointmentId));
+  }
   const followUpDaysValue = typeof body.followUpDays === "number" ? body.followUpDays : Number(body.followUpDays);
   const followUpDate = dateValue(body, "followUpDate");
   if (requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED" && ((Number.isFinite(followUpDaysValue) && followUpDaysValue > 0) || followUpDate)) {
@@ -96,13 +118,9 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     await env.DB.batch(statements);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "";
-    if (/unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
+    if (/mutation_precondition/i.test(message)) return conflict("Запись уже изменилась. Обновите календарь и повторите действие.");
+    if (/CRM_SLOT_UNAVAILABLE|unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(message)) return conflict("У специалиста уже есть пересекающаяся запись");
     return json({ ok: false, error: "Не удалось сохранить изменения записи. Попробуйте ещё раз." }, 500);
   }
-  if (requestedStatus === "COMPLETED" && previousStatus !== "COMPLETED") {
-    const appointment = await env.DB.prepare("SELECT client_id AS clientId, total_amount AS totalAmount FROM appointments WHERE id = ?").bind(appointmentId).first<{ clientId: string; totalAmount: number }>();
-    if (appointment?.clientId) await awardLoyaltyPoints(env.DB, appointmentId, appointment.clientId, Number(appointment.totalAmount || 0));
-  }
-  if (requestedStatus === "CANCELLED" || requestedStatus === "NO_SHOW") await env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(appointmentId).run();
   return json({ ok: true, inventoryWarnings: inventory.warnings });
 };

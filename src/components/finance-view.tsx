@@ -1,5 +1,7 @@
 "use client";
 
+import { ResponsiveTable } from "@/components/responsive-table";
+
 import { FormEvent, useDeferredValue, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2, Download, Landmark, Plus, ReceiptText, Search, Trash2, Zap } from "lucide-react";
 
@@ -140,7 +142,7 @@ export function FinanceView() {
         </div>
 
         <SectionCard title="Журнал операций" subtitle="Удаление и добавление фиксируются в журнале изменений" action={<StatusPill status="paid" />}>
-          {items.length === 0 ? <EmptyState title="Операций пока нет" description="Добавьте аренду, коммунальный платёж или другой расход — сумма появится в отчёте." action={<Button onClick={() => setModalOpen(true)}><Plus size={15} /> Добавить операцию</Button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Операция</th><th>Категория</th><th>Филиал</th><th>Дата</th><th>Статус</th><th>Сумма</th><th /></tr></thead><tbody>{items.map((expense) => <tr key={expense.id}><td><strong>{expense.title}</strong><span className="table-secondary">{expense.description ?? (expense.direction === "INCOME" ? "Фактическое поступление" : "")}</span></td><td>{expense.category}</td><td>{expense.branchName ?? "Все филиалы"}</td><td>{formatDateTime(expense.occurredAt)}</td><td><StatusPill status={statusKey(expense.status)} /></td><td><Amount value={Number(expense.amount || 0)} /><span className="table-secondary">{expense.direction === "INCOME" ? "Доход" : "Расход"}</span></td><td>{expense.expenseId ? <button className="icon-button danger-action" onClick={() => void deleteExpense(expense.expenseId ?? "")} disabled={deletingId === expense.expenseId} title="Аннулировать операцию"><Trash2 size={15} /></button> : null}</td></tr>)}</tbody></table></div>}
+          {items.length === 0 ? <EmptyState title="Операций пока нет" description="Добавьте аренду, коммунальный платёж или другой расход — сумма появится в отчёте." action={<Button onClick={() => setModalOpen(true)}><Plus size={15} /> Добавить операцию</Button>} /> : <div className="table-wrap"><ResponsiveTable className="data-table"><thead><tr><th>Операция</th><th>Категория</th><th>Филиал</th><th>Дата</th><th>Статус</th><th>Сумма</th><th /></tr></thead><tbody>{items.map((expense) => <tr key={expense.id}><td><strong>{expense.title}</strong><span className="table-secondary">{expense.description ?? (expense.direction === "INCOME" ? "Фактическое поступление" : "")}</span></td><td>{expense.category}</td><td>{expense.branchName ?? "Все филиалы"}</td><td>{formatDateTime(expense.occurredAt)}</td><td><StatusPill status={statusKey(expense.status)} /></td><td><Amount value={Number(expense.amount || 0)} /><span className="table-secondary">{expense.direction === "INCOME" ? "Доход" : "Расход"}</span></td><td>{expense.expenseId ? <button className="icon-button danger-action" onClick={() => void deleteExpense(expense.expenseId ?? "")} disabled={deletingId === expense.expenseId} title="Аннулировать операцию"><Trash2 size={15} /></button> : null}</td></tr>)}</tbody></ResponsiveTable></div>}
         </SectionCard>
 
         <div className="dashboard-grid dashboard-grid-equal page-section">

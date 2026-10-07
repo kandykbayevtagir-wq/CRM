@@ -1,3 +1,4 @@
+import { prepareAppointmentConsumption } from "../../_lib/inventory";
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
@@ -20,8 +21,20 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
   const id = stringValue(body, "id");
   const status = stringValue(body, "status", "RESOLVED").toUpperCase();
   if (!id || !["RESOLVED", "IGNORED"].includes(status)) return badRequest("Укажите проблему и корректный статус");
+  const issue = await env.DB.prepare("SELECT appointment_id AS appointmentId FROM inventory_issues WHERE id = ? AND status = 'OPEN'").bind(id).first<{ appointmentId: string }>();
+  if (!issue) return badRequest("Проблема уже обработана или не найдена");
+  if (status === "RESOLVED") {
+    const appointment = await env.DB.prepare("SELECT status FROM appointments WHERE id = ?").bind(issue.appointmentId).first<{ status: string }>();
+    if (appointment?.status !== "COMPLETED") return badRequest("Списание возможно только для завершённого приёма");
+    const consumption = await prepareAppointmentConsumption(env.DB, issue.appointmentId, user.id);
+    await env.DB.batch([...consumption.statements, auditStatement(env.DB, user, "inventory_issue", id, "RETRY_CONSUMPTION", null, { appointmentId: issue.appointmentId })]);
+    const remaining = await env.DB.prepare("SELECT id FROM inventory_issues WHERE id = ? AND status = 'OPEN'").bind(id).first();
+    return json({ ok: !remaining, ...(remaining ? { error: "Материала всё ещё недостаточно. Пополните склад и повторите списание." } : {}) }, remaining ? 409 : 200);
+  }
+  const reason = stringValue(body, "reason");
+  if (!reason) return badRequest("Укажите причину, чтобы пропустить списание");
   const result = await env.DB.prepare("UPDATE inventory_issues SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'OPEN'").bind(status, id).run();
   if (!result.meta.changes) return badRequest("Проблема уже обработана или не найдена");
-  await env.DB.batch([auditStatement(env.DB, user, "inventory_issue", id, "UPDATE", { status: "OPEN" }, { status })]);
+  await env.DB.batch([auditStatement(env.DB, user, "inventory_issue", id, "UPDATE", { status: "OPEN" }, { status, reason })]);
   return json({ ok: true });
 };

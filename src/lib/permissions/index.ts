@@ -79,11 +79,13 @@ const rolePermissions: Record<CrmRole, readonly Permission[]> = {
 };
 
 export function hasPermission(role: string, permission: Permission): boolean {
+  if (!Object.prototype.hasOwnProperty.call(rolePermissions, role)) return false;
   const permissions = rolePermissions[role as CrmRole];
   return Boolean(permissions?.includes(permission));
 }
 
 export function permissionsForRole(role: string): readonly Permission[] {
+  if (!Object.prototype.hasOwnProperty.call(rolePermissions, role)) return [];
   return rolePermissions[role as CrmRole] ?? [];
 }
 

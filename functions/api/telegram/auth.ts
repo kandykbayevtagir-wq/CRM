@@ -17,7 +17,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const allowedIds = (env.CRM_ALLOWED_TELEGRAM_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
   const ownerTelegramId = (env.CRM_OWNER_TELEGRAM_ID ?? "").trim();
 
-  if (!verified || !telegramUser || !telegramId) {
+  if (!verified || !telegramUser || !Number.isSafeInteger(telegramUser.id) || Number(telegramUser.id) <= 0) {
     return json({ ok: false, error: "Telegram data is invalid" }, 403);
   }
 

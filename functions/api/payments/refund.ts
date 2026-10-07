@@ -13,6 +13,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const reason = stringValue(body, "reason");
   const idempotencyKey = stringValue(body, "idempotencyKey") || newId();
   if (!paymentId || amount === null || amount <= 0 || !reason) return badRequest("Укажите платёж, положительную сумму и причину возврата");
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return badRequest("Сумма должна содержать не более двух знаков после запятой");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [paymentId, amount.toFixed(2), reason].join("|");
   const previousAdjustment = await env.DB.prepare("SELECT adjustment_id AS adjustmentId, user_id AS userId, request_hash AS requestHash FROM refund_idempotency_keys WHERE idempotency_key = ? LIMIT 1").bind(idempotencyKey).first<{ adjustmentId: string; userId: string; requestHash: string }>();

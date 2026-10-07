@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, Database, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui";
@@ -8,9 +9,9 @@ import { dispatchCrmEvent } from "@/lib/api-client";
 
 export function LoadingState({ label = "Загружаем данные…" }: { label?: string }) {
   return (
-    <div className="data-state data-state-loading" role="status">
-      <LoaderCircle className="spin" size={20} />
-      <span>{label}</span>
+    <div className="data-state data-state-loading" role="status" aria-live="polite" aria-busy="true">
+      <div className="skeleton-preview" aria-hidden="true"><i /><i /><i /></div>
+      <span><LoaderCircle className="spin" size={16} /> {label}</span>
     </div>
   );
 }
@@ -40,13 +41,20 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
 export function Modal({ title, children, footer, onClose }: { title: string; children: ReactNode; footer?: ReactNode; onClose: () => void }) {
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   useEffect(() => {
     const previousActive = document.activeElement as HTMLElement | null;
     const panel = panelRef.current;
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const focusable = () => panel ? Array.from(panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled")) : [];
-    focusable()[0]?.focus();
+    (panel?.querySelector<HTMLElement>("[autofocus]") ?? focusable().find((element) => element.matches("input, select, textarea")) ?? focusable()[0])?.focus();
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+      if (event.key === "Escape") { event.preventDefault(); closeRef.current(); return; }
       if (event.key !== "Tab") return;
       const elements = focusable();
       if (!elements.length) return;
@@ -56,16 +64,17 @@ export function Modal({ title, children, footer, onClose }: { title: string; chi
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
     document.addEventListener("keydown", onKeyDown);
-    return () => { document.removeEventListener("keydown", onKeyDown); previousActive?.focus(); };
-  }, [onClose]);
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    return () => { document.removeEventListener("keydown", onKeyDown); dialog?.close(); document.body.style.overflow = overflow; previousActive?.focus(); };
+  }, []);
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <dialog ref={dialogRef} className="crm-dialog" onCancel={(event) => { event.preventDefault(); closeRef.current(); }} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section ref={panelRef} className="modal-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <div className="modal-heading"><div><p className="eyebrow">Новая запись в системе</p><h2 id={titleId}>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Закрыть">×</button></div>
+        <div className="modal-heading"><div><p className="eyebrow">podologymk</p><h2 id={titleId}>{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Закрыть">×</button></div>
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-footer">{footer}</div> : null}
       </section>
-    </div>
+    </dialog>, document.body
   );
 }
 

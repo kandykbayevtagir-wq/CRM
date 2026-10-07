@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, now, numberValue, readJson, stringValue } from "../_lib/http";
+import { validShift } from "../../src/lib/appointments/schedule";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -32,6 +33,9 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
   const cancellationWindowHours = Math.min(72, Math.max(0, numberValue(body, "cancellationWindowHours", 2)));
   const loyaltyPointsPer1000 = Math.min(100, Math.max(0, numberValue(body, "loyaltyPointsPer1000", 1)));
   if (!brandName) return badRequest("Название организации обязательно");
+  if (!validShift(bookingStartTime, bookingEndTime, null, null)) return badRequest("Проверьте часы работы центра");
+  try { new Intl.DateTimeFormat("ru-RU", { timeZone: timezone }).format(); } catch { return badRequest("Неизвестный часовой пояс"); }
+  if (currency !== "KZT") return badRequest("Финансовый учёт ведётся в KZT");
   await env.DB.prepare(`
     UPDATE organization_settings SET brand_name = ?, currency = ?, timezone = ?, booking_start_time = ?, booking_end_time = ?,
       booking_slot_interval = ?, working_days = ?, cancellation_window_hours = ?, loyalty_points_per_1000 = ?, updated_at = ? WHERE id = 1

@@ -135,8 +135,8 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   for (const employee of employees.results ?? []) {
     const range = schedulesByEmployee.get(employee.id);
     if (!range) continue;
-    const start = timeToMinutes(range.startsTime);
-    const end = timeToMinutes(range.endsTime);
+    const start = Math.max(timeToMinutes(range.startsTime), timeToMinutes(settings?.startTime || "09:00"));
+    const end = Math.min(timeToMinutes(range.endsTime), timeToMinutes(settings?.endTime || "18:00"));
     const employeeAppointments = appointmentsByEmployee.get(employee.id) ?? [];
     const employeeTimeOff = timeOffByEmployee.get(employee.id) ?? [];
     for (let minute = start; minute + duration <= end; minute += interval) {

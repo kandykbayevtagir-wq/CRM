@@ -32,6 +32,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const method = methods.has(methodValue) ? methodValue : "";
   const idempotencyKey = optionalString(body, "idempotencyKey") || newId();
   if (!appointmentId || amount === null || amount <= 0 || !method) return badRequest("Укажите запись, положительную сумму и способ оплаты");
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return badRequest("Сумма должна содержать не более двух знаков после запятой");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [appointmentId, amount.toFixed(2), method].join("|");
   const previousPayment = await env.DB.prepare("SELECT payment_id AS paymentId, user_id AS userId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? LIMIT 1").bind(idempotencyKey).first<{ paymentId: string; userId: string; requestHash: string }>();

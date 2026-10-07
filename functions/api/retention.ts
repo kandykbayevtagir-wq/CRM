@@ -40,6 +40,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "retention.read")) return forbidden();
+  if (user.role === "SPECIALIST") return forbidden("Сегменты всей базы доступны администратору");
   const metrics = await clientMetrics(env.DB);
   const params = new URL(request.url).searchParams;
   const selected = params.get("segment")?.trim() || "";
@@ -65,6 +66,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "retention.write")) return forbidden();
+  if (user.role === "SPECIALIST") return forbidden("Изменение сегментов доступно администратору");
   const body = await readJson(request);
   const name = stringValue(body, "name");
   const criteria = body.criteria && typeof body.criteria === "object" ? body.criteria : {};

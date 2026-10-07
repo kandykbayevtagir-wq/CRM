@@ -21,17 +21,21 @@ function humanizeApiError(status: number, message: string, code: string | null) 
   return message;
 }
 
-type ApiRequestInit = Omit<RequestInit, "body"> & { body?: BodyInit | Record<string, unknown> };
+type ApiRequestInit = Omit<RequestInit, "body"> & { body?: BodyInit | Record<string, unknown>; timeoutMs?: number };
+
+export function selectedBranch(): string {
+  try { return typeof window === "undefined" ? "" : window.localStorage.getItem("pmk_branch_id") || ""; } catch { return ""; }
+}
 
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json");
   let requestPath = path;
-  if (typeof window !== "undefined" && (init.method ?? "GET").toUpperCase() === "GET" && path.startsWith("/api/") && window.localStorage.getItem("pmk_branch_id")) {
+  if (typeof window !== "undefined" && (init.method ?? "GET").toUpperCase() === "GET" && path.startsWith("/api/") && selectedBranch()) {
       const branchAware = ["/api/dashboard", "/api/appointments", "/api/finance", "/api/reports", "/api/pnl", "/api/kpi", "/api/goals", "/api/inventory", "/api/purchases", "/api/tasks", "/api/payments", "/api/rent", "/api/utilities"];
     if (branchAware.some((prefix) => path.startsWith(prefix))) {
       const url = new URL(path, window.location.origin);
-      if (!url.searchParams.has("branchId")) url.searchParams.set("branchId", window.localStorage.getItem("pmk_branch_id") ?? "");
+      if (!url.searchParams.has("branchId")) url.searchParams.set("branchId", selectedBranch());
       requestPath = `${url.pathname}${url.search}`;
     }
   }
@@ -44,19 +48,23 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
 
   let response: Response;
   try {
+    const timeout = AbortSignal.timeout(init.timeoutMs ?? 20_000);
     response = await fetch(requestPath, {
       ...init,
       body,
       headers,
       credentials: "include",
       cache: "no-store",
+      signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+    if (cause instanceof DOMException && cause.name === "TimeoutError") throw new ApiError("Ответ занял слишком много времени. Проверьте результат операции перед повторной попыткой.", 0);
     throw new ApiError("Не удалось подключиться. Проверьте интернет и попробуйте ещё раз.", 0);
   }
 
-  const payload = (await response.json().catch(() => ({}))) as { error?: string; fieldErrors?: Record<string, string>; code?: string } & T;
+  const payload = (await response.json().catch(() => null)) as ({ error?: string; fieldErrors?: Record<string, string>; code?: string } & T) | null;
+  if (!payload || typeof payload !== "object") throw new ApiError("Сервис вернул неполный ответ. Повторите попытку.", response.status >= 400 ? response.status : 502);
   if (!response.ok) {
     const rawMessage = payload.error ?? "Не удалось выполнить запрос";
     throw new ApiError(humanizeApiError(response.status, rawMessage, payload.code ?? null), response.status, payload.fieldErrors ?? {}, payload.code ?? null);
