@@ -26,6 +26,10 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const employeeId = optionalString(body, "employeeId");
   const preferredDate = optionalString(body, "preferredDate");
   if (!serviceId && !branchId) return badRequest("Выберите хотя бы услугу или филиал");
+  if (preferredDate && (!/^\d{4}-\d{2}-\d{2}$/.test(preferredDate) || Number.isNaN(Date.parse(preferredDate+"T12:00:00Z")) || new Date(preferredDate+"T12:00:00Z").toISOString().slice(0,10) !== preferredDate)) return badRequest("Некорректная дата");
+  if (serviceId && !await env.DB.prepare("SELECT id FROM services WHERE id = ? AND is_active = 1").bind(serviceId).first()) return badRequest("Услуга недоступна");
+  if (branchId && !await env.DB.prepare("SELECT id FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first()) return badRequest("Филиал недоступен");
+  if (employeeId && !await env.DB.prepare("SELECT id FROM employees WHERE id = ? AND is_active = 1").bind(employeeId).first()) return badRequest("Специалист недоступен");
   const id = newId();
   const result = await env.DB.prepare(`
     INSERT INTO client_waitlist (id, client_id, service_id, branch_id, employee_id, preferred_date)

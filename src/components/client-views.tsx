@@ -6,7 +6,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { ArrowRight, CalendarDays, Check, ChevronLeft, Clock3, Gift, MapPin, MessageCircle, RefreshCw, ShieldCheck, Star, UserRound } from "lucide-react";
 
 import { ApiError, apiFetch, dispatchCrmEvent } from "@/lib/api-client";
-import { AuthHint, EmptyState, ErrorState, FormField, InlineError, isAuthError, LoadingState } from "@/components/data-state";
+import { AuthHint, EmptyState, ErrorState, FormField, InlineError, isAuthError, LoadingState, Modal } from "@/components/data-state";
 import { Amount, Button, SectionCard, StatusPill } from "@/components/ui";
 import type { AvailabilityResponse, AvailabilitySlot, Branch, ClientAppointment, LoyaltyResponse, ServiceRecord } from "@/lib/crm-types";
 import { formatCurrency, formatDateTime, initials } from "@/lib/format";
@@ -65,10 +65,18 @@ function focusFirstInvalid() {
   });
 }
 
-function openSupport() {
-  const url = `https://t.me/share/url?url=${encodeURIComponent(window.location.href)}&text=${encodeURIComponent("Здравствуйте! Нужна помощь с записью в podologymk.")}`;
-  window.Telegram?.WebApp.openTelegramLink?.(url);
-  if (!window.Telegram?.WebApp.openTelegramLink) window.open(url, "_blank", "noopener,noreferrer");
+function ClientSupportCard() {
+  const [open, setOpen] = useState(false);
+  const { data, loading, error, reload } = useApi<CatalogResponse>("/api/client/catalog", undefined, { enabled: open });
+  return <>
+    <button type="button" className="client-help-card" onClick={() => setOpen(true)}><MessageCircle size={19} /><div><strong>Связаться с центром</strong><span>Телефоны и адреса филиалов</span></div><ArrowRight size={16} /></button>
+    {open ? <Modal title="Контакты центра" onClose={() => setOpen(false)}>
+      {loading && !data ? <LoadingState label="Загружаем контакты…" /> : null}
+      {error ? <ErrorState message={error} onRetry={reload} /> : null}
+      {data?.branches.map((branch) => <section className="client-preference-card" key={branch.id}><div><strong>{branch.name}</strong><span>{branch.address || "Адрес уточняется"}</span></div>{branch.phone ? <a className="button button-secondary" href={`tel:${branch.phone.replace(/[^+0-9]/g, "")}`}>{branch.phone}</a> : <span>Телефон пока не указан</span>}</section>)}
+      {data && !data.branches.length ? <EmptyState title="Контакты пока не заполнены" description="Напишите в чат бота /contact или уточните контакт центра у сотрудников." /> : null}
+    </Modal> : null}
+  </>;
 }
 
 export function ClientOnboarding({ onComplete, prefillName = "" }: { onComplete?: () => void; prefillName?: string }) {
@@ -139,7 +147,7 @@ export function ClientHomeView() {
 
       <div className="client-stat-grid"><Link href="/client/loyalty" className="client-stat-card"><span className="client-stat-icon client-stat-gift"><Gift size={18} /></span><span><small>Ваши бонусы</small><strong>{loyalty?.account.pointsBalance ?? 0} баллов</strong></span></Link><Link href="/client/appointments" className="client-stat-card"><span className="client-stat-icon client-stat-calendar"><CalendarDays size={18} /></span><span><small>Всего визитов</small><strong>{appointments?.items.filter((item) => statusKey(item.status) === "completed").length ?? 0}</strong></span></Link></div>
 
-      <button type="button" className="client-help-card" onClick={openSupport}><MessageCircle size={19} /><div><strong>Нужна помощь?</strong><span>Напишите администратору через Telegram</span></div><ArrowRight size={16} /></button>
+      <ClientSupportCard />
     </>
   );
 }
@@ -232,7 +240,7 @@ export function ClientBookingView() {
   async function joinWaitlist() {
     try {
       await apiFetch("/api/client/waitlist", { method: "POST", body: { serviceId, branchId, preferredDate: date } });
-      setNotice(`Вы в листе ожидания на ${dateLabel(date)}. Если появится подходящее окно, мы сообщим в Telegram.`);
+      setNotice(`Вы в листе ожидания на ${dateLabel(date)}. Администратор увидит заявку. Свяжитесь с центром, чтобы согласовать подходящее время.`);
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("success");
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "Не удалось добавить в лист ожидания");
@@ -353,7 +361,7 @@ export function ClientProfileView() {
   if (error && isAuthError(error)) return <AuthHint />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
   if (!data?.profile) return <ClientOnboarding prefillName={data?.user.name?.startsWith("Пользователь podologymk") ? "" : data?.user.name} onComplete={() => void reload()} />;
-  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><section className="client-account-card"><div className="client-account-heading"><span className="client-account-avatar">{initials(data.profile.fullName)}</span><div><p className="client-eyebrow">Личный кабинет</p><h1>{data.profile.fullName}</h1><span>{data.profile.phone}</span></div><button type="button" className="button button-secondary" onClick={() => { setNotice(null); setFieldErrors({}); setEditing(true); }}>Изменить</button></div></section>{editing ? <form className="client-profile-form" onSubmit={save}><div className="client-form-section-title">Личные данные</div><FormField label="Имя и фамилия" error={fieldErrors.fullName} errorId="profile-full-name-error"><input name="fullName" required autoComplete="name" defaultValue={data.profile.fullName} aria-invalid={Boolean(fieldErrors.fullName)} aria-describedby={fieldErrors.fullName ? "profile-full-name-error" : undefined} /></FormField><FormField label="Телефон" error={fieldErrors.phone} errorId="profile-phone-error"><PhoneInput required defaultValue={data.profile.phone} enterKeyHint="next" aria-invalid={Boolean(fieldErrors.phone)} aria-describedby={fieldErrors.phone ? "profile-phone-error" : undefined} /></FormField><FormField label="Email"><input name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} defaultValue={data.profile.email ?? ""} /></FormField><label className="consent-row"><input name="allowReminders" type="checkbox" checked={allowReminders} onChange={(event) => setAllowReminders(event.target.checked)} /><span><strong>Напоминать о записи в Telegram</strong><small>Без рекламных сообщений</small></span></label><div className="client-profile-actions"><button className="button button-primary" type="submit" disabled={saving}>{saving ? "Сохраняем…" : "Сохранить"}</button><Button variant="secondary" onClick={() => setEditing(false)}>Отмена</Button></div>{notice ? <p className="client-notice">{notice}</p> : null}</form> : <><section className="client-profile-summary"><p className="client-form-section-title">Личные данные</p><div><span>Имя</span><strong>{data.profile.fullName}</strong></div><div><span>Телефон</span><strong>{data.profile.phone}</strong></div><div><span>Email</span><strong>{data.profile.email || "Не указан"}</strong></div></section><section className="client-preference-card"><div><strong>Напоминания</strong><span>{allowReminders ? "Напоминать о записи в Telegram" : "Напоминания выключены"}</span></div>{allowReminders ? <span className="preference-status">Включены</span> : <Button variant="secondary" onClick={requestReminders}>Включить</Button>}</section><button type="button" className="client-help-card" onClick={openSupport}><MessageCircle size={19} /><div><strong>Помощь</strong><span>Написать администратору через Telegram</span></div><ArrowRight size={16} /></button></>}{notice && !editing ? <p className="client-notice">{notice}</p> : null}<section className="client-privacy-card"><ShieldCheck size={18} /><div><strong>Ваши данные защищены</strong><span>Клинические заметки и внутренние записи специалиста не показываются в клиентском кабинете.</span></div></section></>;
+  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><section className="client-account-card"><div className="client-account-heading"><span className="client-account-avatar">{initials(data.profile.fullName)}</span><div><p className="client-eyebrow">Личный кабинет</p><h1>{data.profile.fullName}</h1><span>{data.profile.phone}</span></div><button type="button" className="button button-secondary" onClick={() => { setNotice(null); setFieldErrors({}); setEditing(true); }}>Изменить</button></div></section>{editing ? <form className="client-profile-form" onSubmit={save}><div className="client-form-section-title">Личные данные</div><FormField label="Имя и фамилия" error={fieldErrors.fullName} errorId="profile-full-name-error"><input name="fullName" required autoComplete="name" defaultValue={data.profile.fullName} aria-invalid={Boolean(fieldErrors.fullName)} aria-describedby={fieldErrors.fullName ? "profile-full-name-error" : undefined} /></FormField><FormField label="Телефон" error={fieldErrors.phone} errorId="profile-phone-error"><PhoneInput required defaultValue={data.profile.phone} enterKeyHint="next" aria-invalid={Boolean(fieldErrors.phone)} aria-describedby={fieldErrors.phone ? "profile-phone-error" : undefined} /></FormField><FormField label="Email"><input name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} defaultValue={data.profile.email ?? ""} /></FormField><label className="consent-row"><input name="allowReminders" type="checkbox" checked={allowReminders} onChange={(event) => setAllowReminders(event.target.checked)} /><span><strong>Напоминать о записи в Telegram</strong><small>Без рекламных сообщений</small></span></label><div className="client-profile-actions"><button className="button button-primary" type="submit" disabled={saving}>{saving ? "Сохраняем…" : "Сохранить"}</button><Button variant="secondary" onClick={() => setEditing(false)}>Отмена</Button></div>{notice ? <p className="client-notice">{notice}</p> : null}</form> : <><section className="client-profile-summary"><p className="client-form-section-title">Личные данные</p><div><span>Имя</span><strong>{data.profile.fullName}</strong></div><div><span>Телефон</span><strong>{data.profile.phone}</strong></div><div><span>Email</span><strong>{data.profile.email || "Не указан"}</strong></div></section><section className="client-preference-card"><div><strong>Напоминания</strong><span>{allowReminders ? "Напоминать о записи в Telegram" : "Напоминания выключены"}</span></div>{allowReminders ? <span className="preference-status">Включены</span> : <Button variant="secondary" onClick={requestReminders}>Включить</Button>}</section><ClientSupportCard /></>}{notice && !editing ? <p className="client-notice">{notice}</p> : null}<section className="client-privacy-card"><ShieldCheck size={18} /><div><strong>Ваши данные защищены</strong><span>Клинические заметки и внутренние записи специалиста не показываются в клиентском кабинете.</span></div></section></>;
 }
 
 export function ClientReviewsView() {

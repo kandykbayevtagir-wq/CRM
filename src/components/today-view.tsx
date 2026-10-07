@@ -19,6 +19,7 @@ type Operations = {
   failures: { id: string; kind: string; errorCode: string; attempts: number }[];
   worker: { status: string; completedAt: string | null } | null; workerStale: boolean;
   overdueBalances: { count: number };
+  waitlist?: { id: string; clientName: string; phone: string; serviceName: string | null; branchName: string | null; preferredDate: string | null }[];
 };
 const nextStatus: Record<string, { status: string; label: string }> = {
   SCHEDULED: { status: "CONFIRMED", label: "Подтвердить" },
@@ -73,6 +74,12 @@ export function TodayView() {
     catch (cause) { setNotice(cause instanceof Error ? cause.message : "Не удалось повторить"); }
     finally { setPendingId(null); }
   }
+  async function closeWaitlist(id: string) {
+    setPendingId(id); setNotice(null);
+    try { await apiFetch("/api/operations", { method:"POST", body:{action:"close_waitlist",waitlistId:id} }); setNotice("Заявка закрыта"); await reload(); }
+    catch(cause) { setNotice(cause instanceof Error ? cause.message : "Не удалось закрыть заявку"); }
+    finally { setPendingId(null); }
+  }
   if (loading && !data) return <LoadingState label="Подготавливаем рабочий день…" />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
   return <>
@@ -100,6 +107,7 @@ export function TodayView() {
       </SectionCard>
       <aside className="reception-attention"><SectionCard title="Требует внимания" subtitle="Незакрытые рабочие вопросы"><div className="attention-links"><Link href="/appointments"><span>Неоплаченные завершённые приёмы <b>{data?.overdueBalances.count ?? 0}</b></span><ArrowRight size={16} /></Link><Link href="/tasks"><span>Задачи команды</span><ArrowRight size={16} /></Link><Link href="/retention"><span>Рекомендованные повторные визиты</span><ArrowRight size={16} /></Link></div></SectionCard>
         <SectionCard title="Доставка Telegram" subtitle={data?.workerStale ? "Проверка фоновой доставки требует внимания" : "Фоновая доставка работает"}><div className={"delivery-status " + (data?.workerStale ? "delivery-status-warning" : "")}><ShieldCheck size={18} /><span>{data?.workerStale ? "Нет свежего отчёта за 15 минут" : "Последняя проверка успешна"}</span></div><div className="delivery-counts">{data?.queue.map((item) => <span key={item.status}><StatusPill status={item.status === "PENDING" ? "queued" : item.status} /> {item.count}</span>)}</div>{data?.failures.map((failure) => <div className="delivery-failure" key={failure.id}><div><strong>{failure.kind === "DIRECT" ? "Ответ бота" : "Уведомление"}</strong><small>{failure.errorCode || "Не доставлено"} · попыток: {failure.attempts}</small></div><Button variant="secondary" disabled={Boolean(pendingId)} onClick={() => void retry(failure.id)}>Повторить</Button></div>)}</SectionCard>
+        {data?.waitlist?.length ? <SectionCard title="Лист ожидания" subtitle="Свяжитесь с клиентом и согласуйте время"><div className="attention-links">{data.waitlist.map((item) => <div className="delivery-failure" key={item.id}><div><strong>{item.clientName}</strong><small>{[item.serviceName,item.branchName,item.preferredDate].filter(Boolean).join(" · ")}</small><a className="button button-ghost" href={"tel:+"+item.phone.replace(/\D/g,"")}><Phone size={14} /> Позвонить</a><Button variant="ghost" disabled={Boolean(pendingId)} onClick={() => void closeWaitlist(item.id)}>Закрыть заявку</Button></div></div>)}</div></SectionCard> : null}
       </aside>
     </div>
     {payment ? <Modal title={"Оплата · " + payment.clientName} onClose={() => { if(!pendingId) setPayment(null); }} footer={<Button type="submit" form="reception-payment-form" loading={Boolean(pendingId)}>Провести оплату</Button>}><form id="reception-payment-form" className="form-grid" onSubmit={pay}><FormField label="Сумма, ₸"><input name="amount" type="number" min="0.01" step="0.01" max={balance(payment)} defaultValue={balance(payment)} required /></FormField><FormField label="Способ оплаты"><select name="method"><option value="CASH">Наличные</option><option value="CARD">Карта</option><option value="QR">QR / Kaspi</option><option value="TRANSFER">Перевод</option></select></FormField>{notice ? <p className="form-error" role="alert">{notice}</p> : null}</form></Modal> : null}

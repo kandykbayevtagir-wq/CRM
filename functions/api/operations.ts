@@ -17,7 +17,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0,10) !== date) return badRequest("Некорректная дата");
   const { from, to } = localDayRange(date, timezone);
   const branchId = params.get("branchId") || "";
-  const [appointments, queue, failures, worker, obligations] = await Promise.all([
+  const [appointments, queue, failures, worker, obligations, waitlist] = await Promise.all([
     env.DB.prepare(`SELECT a.id, a.revision, a.starts_at AS startsAt, a.ends_at AS endsAt, a.status, a.total_amount AS amount,
       a.client_id AS clientId, c.full_name AS clientName, c.phone AS clientPhone, e.full_name AS employeeName, b.name AS branchName,
       (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName,
@@ -34,9 +34,14 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
       AND a.total_amount > COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.appointment_id = a.id AND p.payment_status = 'POSTED'),0) -
       COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa WHERE pa.appointment_id = a.id),0)
       ${branchId ? "AND a.branch_id = ?" : ""}`).bind(...(branchId ? [branchId] : [])).first(),
+    env.DB.prepare(`SELECT w.id, c.full_name AS clientName, c.phone, s.name AS serviceName, b.name AS branchName, w.preferred_date AS preferredDate
+      FROM client_waitlist w JOIN clients c ON c.id = w.client_id
+      LEFT JOIN services s ON s.id = w.service_id LEFT JOIN branches b ON b.id = w.branch_id
+      WHERE w.status IN ('ACTIVE','OFFERED') ${branchId ? "AND (w.branch_id = ? OR w.branch_id IS NULL)" : ""}
+      ORDER BY w.created_at, w.id LIMIT 30`).bind(...(branchId ? [branchId] : [])).all(),
   ]);
   return json({ ok: true, date, timezone, items: appointments.results ?? [], queue: queue.results ?? [],
-    failures: failures.results ?? [], worker, overdueBalances: obligations, workerStale: worker?.status !== "OK" || !worker?.completedAt || Date.now() - Date.parse(worker.completedAt.replace(" ", "T") + (worker.completedAt.endsWith("Z") ? "" : "Z")) > 15 * 60000 });
+    failures: failures.results ?? [], waitlist: waitlist.results ?? [], worker, overdueBalances: obligations, workerStale: worker?.status !== "OK" || !worker?.completedAt || Date.now() - Date.parse(worker.completedAt.replace(" ", "T") + (worker.completedAt.endsWith("Z") ? "" : "Z")) > 15 * 60000 });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
@@ -45,6 +50,20 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "appointments.manage_all")) return forbidden();
   const body = await readJson(request);
+  if (stringValue(body, "action") === "close_waitlist") {
+    const id = stringValue(body, "waitlistId");
+    const row = await env.DB.prepare("SELECT status FROM client_waitlist WHERE id = ?").bind(id).first<{status:string}>();
+    if (!row) return badRequest("Заявка не найдена");
+    if (!["ACTIVE","OFFERED"].includes(row.status)) return json({ok:true,replayed:true});
+    const guardId = newId();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO mutation_guards(id, passed) SELECT ?, EXISTS(SELECT 1 FROM client_waitlist WHERE id = ? AND status = ?)").bind(guardId,id,row.status),
+      env.DB.prepare("DELETE FROM mutation_guards WHERE id = ?").bind(guardId),
+      env.DB.prepare("UPDATE client_waitlist SET status = 'CANCELLED' WHERE id = ?").bind(id),
+      auditStatement(env.DB,user,"waitlist",id,"CLOSE",{status:row.status},{status:"CANCELLED"}),
+    ]);
+    return json({ok:true});
+  }
   const id = stringValue(body, "messageId");
   const row = await env.DB.prepare("SELECT event_key AS eventKey FROM message_outbox WHERE id = ? AND status = 'FAILED'").bind(id).first<{ eventKey: string }>();
   if (!row) return badRequest("Сообщение уже обработано или не найдено");

@@ -9,10 +9,14 @@ import { onRequestGet as profile, onRequestPost as saveProfile } from "../functi
 import { onRequestPost as checkin } from "../functions/api/checkin";
 import { onRequestGet as calendar } from "../functions/api/client/calendar";
 import { onRequestGet as operations } from "../functions/api/operations";
+import { onRequestPost as operationAction } from "../functions/api/operations";
+import { onRequestGet as clientCatalog } from "../functions/api/client/catalog";
+import { onRequestPost as waitlistRequest } from "../functions/api/client/waitlist";
 import { onRequestPost as webhook } from "../functions/api/telegram/webhook";
 import { enqueueDueReminders, processOutbox } from "../functions/_lib/notification-delivery";
 import { calculatePayrollPeriod, closePayrollPeriod } from "../functions/_lib/payroll";
 import { getSessionUser } from "../functions/_lib/auth";
+import { findAvailableSlots } from "../functions/_lib/availability";
 
 let db: D1Database;
 let sqlite: DatabaseSync;
@@ -41,6 +45,13 @@ describe("database migrations and booking integrity", () => {
     expect(first.status).toBe(201); expect(second.body.id).toBe(first.body.id);
     expect(second.body.replayed).toBe(true); expect(count("appointments")).toBe(1);
     expect(count("appointment_slot_reservations")).toBe(4);
+  });
+  it("does not offer occupied slots when old records use SQLite timestamps", async () => {
+    seedVisit(sqlite,"legacy","SCHEDULED","2030-01-07 04:00:00");
+    const slots=await findAvailableSlots(db,{date:"2030-01-07",branchId:"branch",serviceId:"service",employeeId:"employee"});
+    expect(slots.some(slot=>slot.startsAt==="2030-01-07T04:00:00.000Z")).toBe(false);
+    expect(slots.some(slot=>slot.startsAt==="2030-01-07T04:30:00.000Z")).toBe(false);
+    expect(slots.some(slot=>slot.startsAt==="2030-01-07T05:00:00.000Z")).toBe(true);
   });
   it("does not modify an appointment when a competing booking takes its slot", async () => {
     seedVisit(sqlite);
@@ -97,6 +108,29 @@ describe("payments and closed payroll", () => {
   });
 });
 describe("ownership and privacy", () => {
+  it("does not expose internal service costs to a client", async () => {
+    sqlite.exec("UPDATE services SET cost = 7777 WHERE id = 'service'");
+    const {context}=await requestContext(db,"/api/client/catalog","GET",undefined,"user");
+    const response=await clientCatalog(context) as Response;
+    const result=await response.json() as {services:Record<string,unknown>[]};
+    expect(result.services[0].price).toBe(10000);
+    expect(result.services[0]).not.toHaveProperty("cost");
+  });
+  it("makes waitlist requests visible and closable only by administrators", async () => {
+    expect((await call(waitlistRequest,"/api/client/waitlist","POST",{serviceId:"service",branchId:"branch",preferredDate:"2030-02-30"},"user")).status).toBe(400);
+    const saved=await call(waitlistRequest,"/api/client/waitlist","POST",{serviceId:"service",branchId:"branch",preferredDate:"2030-01-07"},"user");
+    expect(saved.status).toBe(201);
+    const {context}=await requestContext(db,"/api/operations","GET");
+    const response=await operations(context) as Response;
+    const result=await response.json() as {waitlist:{id:string}[]};
+    expect(result.waitlist.map(item=>item.id)).toContain(saved.body.id);
+    const action={action:"close_waitlist",waitlistId:saved.body.id};
+    expect((await call(operationAction,"/api/operations","POST",action,"user")).status).toBe(403);
+    expect((await call(operationAction,"/api/operations","POST",action)).status).toBe(200);
+    const auditCount=count("audit_logs");
+    expect((await call(operationAction,"/api/operations","POST",action)).body.replayed).toBe(true);
+    expect(count("audit_logs")).toBe(auditCount);
+  });
   it("does not show or overwrite internal CRM notes in the client profile", async () => {
     const result=await call(profile,"/api/client/profile","GET",undefined,"user");
     expect(result.body.profile.notes).toBe("Личное предпочтение");

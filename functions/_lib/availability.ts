@@ -1,3 +1,4 @@
+import { localDayRange } from "../../src/lib/appointments/schedule";
 import { reservationStarts } from "../../src/lib/appointments/reservations";
 
 export type AvailabilitySlot = {
@@ -86,25 +87,24 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   if (!employees.results?.length) return [];
 
   const timezone = String(settings?.timezone ?? "Asia/Almaty");
-  const dateStart = new Date(`${params.date}T00:00:00${timezoneOffset(params.date, timezone)}`).toISOString();
-  const dateEnd = new Date(`${params.date}T23:59:59.999${timezoneOffset(params.date, timezone)}`).toISOString();
+  const { from: dateStart, to: dateEnd } = localDayRange(params.date, timezone);
   const employeeIds = employees.results.map((employee) => employee.id);
   const placeholders = employeeIds.map(() => "?").join(",");
   const [appointments, timeOff, schedules, closures, reservations] = await Promise.all([
     db.prepare(`
-      SELECT a.id, a.employee_id AS employeeId, a.starts_at AS startsAt, a.ends_at AS endsAt,
+      SELECT a.id, a.employee_id AS employeeId, strftime('%Y-%m-%dT%H:%M:%fZ', a.starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', a.ends_at) AS endsAt,
         COALESCE(SUM(s.duration_minutes * aps.quantity), 60) AS durationMinutes
       FROM appointments a
       LEFT JOIN appointment_services aps ON aps.appointment_id = a.id
       LEFT JOIN services s ON s.id = aps.service_id
-      WHERE a.employee_id IN (${placeholders}) AND a.starts_at >= ? AND a.starts_at <= ?
+      WHERE a.employee_id IN (${placeholders}) AND julianday(COALESCE(a.ends_at, datetime(a.starts_at, '+60 minutes'))) > julianday(?) AND julianday(a.starts_at) < julianday(?)
         AND a.status NOT IN ('CANCELLED', 'NO_SHOW') ${params.excludeAppointmentId ? "AND a.id <> ?" : ""}
       GROUP BY a.id
     `).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ id: string; employeeId: string; startsAt: string; endsAt: string | null; durationMinutes: number }>(),
-    db.prepare(`SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE employee_id IN (${placeholders}) AND starts_at < ? AND ends_at > ?`).bind(...employeeIds, dateEnd, dateStart).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
+    db.prepare(`SELECT employee_id AS employeeId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM employee_time_off WHERE employee_id IN (${placeholders}) AND julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)`).bind(...employeeIds, dateEnd, dateStart).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
-    db.prepare("SELECT branch_id AS branchId, starts_at AS startsAt, ends_at AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND starts_at < ? AND ends_at > ?").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
-    db.prepare(`SELECT employee_id AS employeeId, slot_start AS slotStart FROM appointment_slot_reservations WHERE employee_id IN (${placeholders}) AND slot_start >= ? AND slot_start < ? ${params.excludeAppointmentId ? "AND appointment_id <> ?" : ""}`).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ employeeId: string; slotStart: string }>(),
+    db.prepare("SELECT branch_id AS branchId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
+    db.prepare(`SELECT employee_id AS employeeId, slot_start AS slotStart FROM appointment_slot_reservations WHERE employee_id IN (${placeholders}) AND julianday(slot_start) >= julianday(?) AND julianday(slot_start) < julianday(?) ${params.excludeAppointmentId ? "AND appointment_id <> ?" : ""}`).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ employeeId: string; slotStart: string }>(),
   ]);
 
   const schedulesByEmployee = new Map<string, TimeRange>();
