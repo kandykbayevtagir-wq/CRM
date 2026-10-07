@@ -16,8 +16,6 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   const purchaseId = Array.isArray(params.id) ? params.id[0] : params.id;
   const purchase = await env.DB.prepare("SELECT id, branch_id AS branchId, status FROM purchases WHERE id = ?").bind(purchaseId).first<{ id: string; branchId: string; status: string }>();
   if (!purchase) return notFound("Закупка не найдена");
-  // Only an ordered purchase can be received; drafts are not yet confirmed with the supplier.
-  if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(purchase.status)) return badRequest(purchase.status === "CANCELLED" ? "Закупка отменена" : purchase.status === "RECEIVED" ? "Закупка уже полностью принята" : "Сначала переведите закупку в статус «Заказано»");
   const body = await readJson(request);
   const items = (Array.isArray(body.items) ? body.items : []).map((raw): ReceiveItem | null => {
     if (!raw || typeof raw !== "object") return null;
@@ -29,6 +27,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   if (!items.length) return badRequest("Укажите хотя бы одну принимаемую позицию");
   if (items.length > 50) return badRequest("За один раз можно принять не более 50 позиций");
   const key = stringValue(body, "idempotencyKey").slice(0, 128) || newId();
+  // A retry of an already applied receipt is answered as a replay even after the purchase became RECEIVED.
+  const movementKeyFor = (purchaseItemId: string) => `purchase:${purchaseId}:item:${purchaseItemId}:receipt:${key}`;
+  const alreadyApplied = await env.DB.prepare(`SELECT COUNT(*) AS value FROM stock_movements WHERE idempotency_key IN (${items.map(() => "?").join(",")})`).bind(...items.map((item) => movementKeyFor(item.purchaseItemId))).first<{ value: number }>();
+  if (Number(alreadyApplied?.value ?? 0) === items.length) return json({ ok: true, replayed: true });
+  // Only an ordered purchase can be received; drafts are not yet confirmed with the supplier.
+  if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(purchase.status)) return badRequest(purchase.status === "CANCELLED" ? "Закупка отменена" : purchase.status === "RECEIVED" ? "Закупка уже полностью принята" : "Сначала переведите закупку в статус «Заказано»");
   const receivedAt = zonedDateValue(body, "receivedAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   let conditionalStatements = 0;
   const statements: D1PreparedStatement[] = [];
@@ -39,7 +43,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
     const remaining = Number(row.orderedQuantity) - Number(row.receivedQuantity);
     if (item.quantity > remaining + 0.000001) return badRequest(`Количество для «${row.name}» превышает остаток к приёму`);
     const unitCost = item.unitCost ?? Number(row.unitCost ?? row.purchasePrice ?? 0);
-    const movementKey = `purchase:${purchaseId}:item:${item.purchaseItemId}:receipt:${key}`;
+    const movementKey = movementKeyFor(item.purchaseItemId);
     const existingMovement = await env.DB.prepare("SELECT id FROM stock_movements WHERE idempotency_key = ? LIMIT 1").bind(movementKey).first<{ id: string }>();
     if (existingMovement) continue;
     requestedMovementKeys.push(movementKey);
