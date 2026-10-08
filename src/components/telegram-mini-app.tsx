@@ -33,11 +33,12 @@ export function TelegramMiniApp() {
 
     const applyTelegramTheme = (webApp: TelegramWebApp) => {
       const root = document.documentElement;
-      const theme = webApp.themeParams ?? {};
-      root.style.setProperty("--tg-bg", theme.bg_color ?? "#f7f8fb");
-      root.style.setProperty("--tg-surface", theme.secondary_bg_color ?? "#ffffff");
-      root.style.setProperty("--tg-text", theme.text_color ?? "#22212b");
-      root.style.setProperty("--tg-hint", theme.hint_color ?? "#6f707c");
+      // The CRM ships a single light palette (the header colour is forced light below as well);
+      // taking Telegram's dark background here used to produce dark text on a dark page.
+      root.style.setProperty("--tg-bg", "#f7f8fb");
+      root.style.setProperty("--tg-surface", "#ffffff");
+      root.style.setProperty("--tg-text", "#22212b");
+      root.style.setProperty("--tg-hint", "#6f707c");
       const safeArea = webApp.safeAreaInset ?? {};
       const contentArea = webApp.contentSafeAreaInset ?? {};
       root.style.setProperty("--tg-safe-top", `${Math.max(safeArea.top ?? 0, contentArea.top ?? 0)}px`);
@@ -58,7 +59,7 @@ export function TelegramMiniApp() {
       webApp.disableVerticalSwipes?.();
       applyTelegramTheme(webApp);
       themeHandler = () => applyTelegramTheme(webApp);
-      webApp.onEvent?.("themeChanged", themeHandler);
+      for (const eventName of ["themeChanged", "safeAreaChanged", "contentSafeAreaChanged", "viewportChanged"]) webApp.onEvent?.(eventName, themeHandler);
     };
 
     const authenticate = async () => {
@@ -78,6 +79,7 @@ export function TelegramMiniApp() {
               headers: { "content-type": "application/json" },
               credentials: "include",
               cache: "no-store",
+              signal: AbortSignal.timeout(10_000),
               body: JSON.stringify({ initData }),
             });
             if (response.ok) {
@@ -85,9 +87,8 @@ export function TelegramMiniApp() {
               return;
             }
             if (response.status >= 400 && response.status < 500) return;
-          } catch {
-            if (attempt < 2) await wait(500 * (attempt + 1));
-          }
+          } catch { /* Retry transient network failures with the same signed init data. */ }
+          if (attempt < 2 && !cancelled) await wait(500 * (attempt + 1));
         }
       } finally {
         authInFlight = false;
@@ -103,7 +104,7 @@ export function TelegramMiniApp() {
     return () => {
       cancelled = true;
       window.removeEventListener("crm:telegram-retry", handleRetry);
-      if (activeWebApp && themeHandler) activeWebApp.offEvent?.("themeChanged", themeHandler);
+      if (activeWebApp && themeHandler) for (const eventName of ["themeChanged", "safeAreaChanged", "contentSafeAreaChanged", "viewportChanged"]) activeWebApp.offEvent?.(eventName, themeHandler);
     };
   }, []);
 

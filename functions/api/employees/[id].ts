@@ -17,7 +17,9 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const phone = optionalPhoneValue(body);
   if (!values.fullName || !values.position || values.fixedSalary < 0 || values.revenuePercent < 0) return badRequest("Проверьте имя, должность и зарплатные настройки");
   if (phone.provided && !phone.value) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
+  const hasBranchPayload = body.branchIds !== undefined || body.branchId !== undefined;
   const ids = branchIds(body);
+  if (hasBranchPayload && !ids.length) return badRequest("Выберите хотя бы один филиал");
   const hasServicePayload = body.serviceIds !== undefined || body.serviceId !== undefined;
   const selectedServiceIds = serviceIds(body);
   if (hasServicePayload && !selectedServiceIds.length) return badRequest("Выберите хотя бы одну услугу");
@@ -28,9 +30,13 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`UPDATE employees SET full_name = ?, position = ?, phone = ?, email = ?, branch_id = ?, user_id = ?, fixed_salary = ?, revenue_percent = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .bind(values.fullName, values.position, phone.provided ? phone.value : existing.phone ?? null, optionalString(body, "email") ?? existing.email ?? null, ids[0] ?? existing.branch_id ?? null, optionalString(body, "userId") ?? existing.user_id ?? null, values.fixedSalary, values.revenuePercent, body.isActive === undefined ? Number(existing.is_active ?? 1) : body.isActive === false || body.isActive === "false" ? 0 : 1, id),
-    env.DB.prepare("DELETE FROM employee_branches WHERE employee_id = ?").bind(id),
   ];
-  for (const [index, branchId] of ids.entries()) statements.push(env.DB.prepare("INSERT INTO employee_branches (employee_id, branch_id, is_primary) VALUES (?, ?, ?)").bind(id, branchId, index === 0 ? 1 : 0));
+  // Branch links are rewritten only when the request actually carries branches;
+  // a salary or status update must not detach the employee from every branch.
+  if (hasBranchPayload) {
+    statements.push(env.DB.prepare("DELETE FROM employee_branches WHERE employee_id = ?").bind(id));
+    for (const [index, branchId] of ids.entries()) statements.push(env.DB.prepare("INSERT INTO employee_branches (employee_id, branch_id, is_primary) VALUES (?, ?, ?)").bind(id, branchId, index === 0 ? 1 : 0));
+  }
   if (hasServicePayload) {
     statements.push(env.DB.prepare("DELETE FROM employee_services WHERE employee_id = ?").bind(id));
     for (const serviceId of selectedServiceIds) statements.push(env.DB.prepare("INSERT INTO employee_services (id, employee_id, service_id, active) VALUES (?, ?, ?, 1)").bind(crypto.randomUUID(), id, serviceId));

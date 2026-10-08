@@ -11,12 +11,12 @@ const transitions: Record<AppointmentStatus, readonly AppointmentStatus[]> = {
 };
 
 export function isAppointmentStatus(value: string): value is AppointmentStatus {
-  return value in transitions;
+  return Object.prototype.hasOwnProperty.call(transitions, value);
 }
 
 export function canTransitionAppointment(from: string, to: string, administrativeOverride = false): boolean {
-  if (from === to) return true;
   if (!isAppointmentStatus(from) || !isAppointmentStatus(to)) return false;
+  if (from === to) return true;
   if (administrativeOverride && from === "COMPLETED" && to === "CANCELLED") return true;
   return transitions[from].includes(to);
 }

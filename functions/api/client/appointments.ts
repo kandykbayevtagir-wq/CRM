@@ -1,6 +1,12 @@
+import { localDate } from "../../../src/lib/appointments/schedule";
+import { getActiveClientId } from "../../_lib/access";
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
+import { isoColumn, organizationTimezone } from "../../_lib/dates";
+import { HttpError } from "../../_lib/security";
 import { findAvailableSlots } from "../../_lib/availability";
 import { reservationStatements } from "../../_lib/booking";
+import { assertUnchanged } from "../../_lib/transaction";
+import { auditStatement } from "../../_lib/audit";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, conflict, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
 
@@ -8,9 +14,10 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!isClient(user)) return forbidden();
-  if (!user.clientId) return json({ ok: true, items: [] });
+  const activeClientId = await getActiveClientId(env.DB, user);
+  if (!activeClientId) return json({ ok: true, items: [] });
   const rows = await env.DB.prepare(`
-    SELECT a.id, a.starts_at AS startsAt, a.status, a.total_amount AS amount, a.notes,
+    SELECT a.id, ${isoColumn("a.starts_at")} AS startsAt, ${isoColumn("a.ends_at")} AS endsAt, a.status, a.total_amount AS amount,
       c.full_name AS clientName, c.phone AS clientPhone,
       (SELECT aps.service_id FROM appointment_services aps WHERE aps.appointment_id = a.id LIMIT 1) AS serviceId,
       (SELECT s.name FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id LIMIT 1) AS serviceName,
@@ -23,8 +30,8 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     LEFT JOIN branches b ON b.id = a.branch_id
     LEFT JOIN client_reviews r ON r.appointment_id = a.id
     WHERE a.client_id = ?
-    ORDER BY a.starts_at DESC LIMIT 100
-  `).bind(user.clientId).all();
+    ORDER BY julianday(a.starts_at) DESC LIMIT 100
+  `).bind(activeClientId).all();
   return json({ ok: true, items: rows.results ?? [] });
 };
 
@@ -34,6 +41,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   if (!user) return unauthorized();
   if (!isClient(user)) return forbidden();
   if (!user.clientId) return badRequest("Сначала заполните профиль клиента");
+  if (!await getActiveClientId(env.DB, user)) return forbidden("Карточка клиента архивирована. Обратитесь к администратору центра.");
   const body = await readJson(request);
   const startsAt = dateValue(body, "startsAt");
   const serviceId = stringValue(body, "serviceId");
@@ -45,23 +53,37 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [appointmentId, startsAt, serviceId, branchId, employeeId].join("|");
   if (idempotencyKey) {
-    const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
-      .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();
+    const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, user_id AS userId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? LIMIT 1")
+      .bind(idempotencyKey).first<{ appointmentId: string; userId: string; requestHash: string; changed: number }>();
+    if (previous && previous.userId !== user.id) return conflict("Этот ключ уже использован");
     if (previous && previous.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой записи");
     if (previous) return json({ ok: true, id: previous.appointmentId, changed: previous.changed === 1, replayed: true });
   }
   if (new Date(startsAt).getTime() <= Date.now()) return badRequest("Нельзя записаться на прошедшее время");
 
   const existing = appointmentId
-    ? await env.DB.prepare("SELECT id, status, starts_at AS startsAt FROM appointments WHERE id = ? AND client_id = ?").bind(appointmentId, user.clientId).first<{ id: string; status: string; startsAt: string }>()
+    ? await env.DB.prepare(`SELECT id, revision, status, ${isoColumn("starts_at")} AS startsAt, total_amount AS totalAmount,
+        (SELECT COUNT(*) FROM appointment_services aps WHERE aps.appointment_id = appointments.id) AS serviceCount,
+        (SELECT aps.service_id FROM appointment_services aps WHERE aps.appointment_id = appointments.id LIMIT 1) AS serviceId
+        FROM appointments WHERE id = ? AND client_id = ?`).bind(appointmentId, user.clientId).first<{ id: string; revision: number; status: string; startsAt: string; totalAmount: number; serviceCount: number; serviceId: string | null }>()
     : null;
-  if (appointmentId && (!existing || ["COMPLETED", "CANCELLED", "NO_SHOW"].includes(existing.status))) return badRequest("Эту запись уже нельзя перенести");
-  const date = startsAt.slice(0, 10);
+  if (appointmentId && (!existing || !["SCHEDULED", "CONFIRMED"].includes(existing.status))) return badRequest("Эту запись уже нельзя перенести");
+  if (existing) {
+    const settings = await env.DB.prepare("SELECT cancellation_window_hours AS hours FROM organization_settings WHERE id = 1").first<{ hours: number }>();
+    if (new Date(existing.startsAt).getTime() - Date.now() < Number(settings?.hours ?? 2) * 3600000) return badRequest("Для переноса ближайшей записи свяжитесь с администратором");
+    const paid = await env.DB.prepare("SELECT 1 FROM payments WHERE appointment_id = ? LIMIT 1").bind(existing.id).first();
+    if (paid) return badRequest("Для переноса оплаченной записи свяжитесь с администратором");
+    // A reschedule moves the visit in time only: the agreed services and price stay as the administrator set them.
+    if (Number(existing.serviceCount) > 1 || (existing.serviceId && existing.serviceId !== serviceId)) return badRequest("Эта запись содержит несколько услуг или другую услугу. Для переноса свяжитесь с администратором.");
+  }
+  const timezone = await organizationTimezone(env.DB);
+  const date = localDate(startsAt, timezone);
   let slots;
   try {
     slots = await findAvailableSlots(env.DB, { date, branchId, serviceId, employeeId, excludeAppointmentId: appointmentId || undefined });
   } catch (cause) {
-    return badRequest(cause instanceof Error ? cause.message : "Не удалось проверить свободное окно");
+    if (cause instanceof HttpError) return badRequest(cause.message);
+    throw cause;
   }
   const slot = slots.find((item) => item.startsAt === startsAt && item.employeeId === employeeId);
   if (!slot) return json({ ok: false, error: "Это время уже занято. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
@@ -75,9 +97,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const changed = Boolean(existing);
   const appointmentStatements: D1PreparedStatement[] = existing
     ? [
-        env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, ends_at = ?, status = 'SCHEDULED', source = 'TELEGRAM', total_amount = ?, cancel_reason = NULL, cancelled_at = NULL, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.endsAt, slot.price, user.id, id),
-        env.DB.prepare("DELETE FROM appointment_services WHERE appointment_id = ?").bind(id),
-        env.DB.prepare("INSERT INTO appointment_services (appointment_id, service_id, price, duration_minutes, quantity) VALUES (?, ?, ?, ?, 1)").bind(id, serviceId, slot.price, service.durationMinutes),
+        ...assertUnchanged(env.DB, "appointments", existing.id, existing.revision),
+        env.DB.prepare("UPDATE appointments SET employee_id = ?, branch_id = ?, starts_at = ?, ends_at = ?, status = 'SCHEDULED', confirmed_at = NULL, cancel_reason = NULL, cancelled_at = NULL, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(employeeId, branchId, startsAt, slot.endsAt, user.id, id),
         env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, 'SCHEDULED', ?, 'Клиент перенёс запись')").bind(newId(), id, existing.status, user.id),
       ]
     : [
@@ -92,12 +113,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   ].filter((reminder) => reminder.time.getTime() > Date.now());
   const notificationStatements: D1PreparedStatement[] = [
     env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(id),
-    env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)")
+    env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, status, scheduled_at, sent_at, payload_json) VALUES (?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, NULL, ?)")
       .bind(notificationId, user.id, user.clientId, id, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ startsAt })),
     ...reminderTimes.map((reminder) => env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(newId(), user.id, user.clientId, id, reminder.kind, reminder.time.toISOString(), JSON.stringify({ startsAt }))),
     env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, ?, ?)")
-      .bind(newId(), `appointment:${id}:${changed ? `changed:${startsAt}` : "confirmed"}`, user.telegramId, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ clientName: client.fullName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: "Asia/Almaty" }).format(new Date(startsAt)), specialist: employee.fullName, service: service.name, branch: branch.name })),
+      .bind(newId(), `appointment:${id}:${changed ? `changed:${Number(existing?.revision ?? 0) + 1}` : "confirmed"}`, user.telegramId, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ notificationId, appointmentId: id, clientName: client.fullName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: timezone }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: timezone }).format(new Date(startsAt)), specialist: employee.fullName, service: service.name, branch: branch.name })),
   ];
   const reservationChanges: D1PreparedStatement[] = [
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(id),
@@ -107,9 +128,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
     .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {
-    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement]);
+    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
+      auditStatement(env.DB, user, "appointment", id, changed ? "RESCHEDULE" : "CREATE", existing, { startsAt, serviceId, branchId, employeeId }),
+    ]);
   } catch (cause) {
     const databaseMessage = cause instanceof Error ? cause.message : "";
+    if (/mutation_precondition/.test(databaseMessage)) return conflict("Запись уже изменилась. Обновите список записей.");
     if (idempotencyKey) {
       const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
         .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();

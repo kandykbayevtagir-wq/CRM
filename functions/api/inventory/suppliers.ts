@@ -16,7 +16,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "inventory.write")) return forbidden();
   const body = await readJson(request);
-  const name = stringValue(body, "name");
+  const name = stringValue(body, "name").slice(0, 200);
   if (!name) return badRequest("Название поставщика обязательно");
   const id = newId();
   await env.DB.batch([

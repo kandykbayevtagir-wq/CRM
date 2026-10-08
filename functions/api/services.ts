@@ -6,11 +6,13 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "services.read")) return forbidden();
+  // Cost price is management data: specialists and administrators see prices only.
+  const costVisible = hasCrmPermission(user, "finance.read") || hasCrmPermission(user, "pnl.read") || hasCrmPermission(user, "services.write");
   const rows = await env.DB.prepare(`
-    SELECT id, name, category, price, cost, duration_minutes AS durationMinutes, is_active AS isActive
+    SELECT id, name, category, price, ${costVisible ? "cost" : "NULL AS cost"}, duration_minutes AS durationMinutes, is_active AS isActive
     FROM services ORDER BY is_active DESC, category ASC, name ASC
   `).all();
-  return json({ ok: true, items: rows.results ?? [] });
+  return json({ ok: true, costVisible, items: rows.results ?? [] });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
@@ -18,7 +20,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "services.write")) return forbidden();
   const body = await readJson(request);
-  const name = stringValue(body, "name");
+  const name = stringValue(body, "name").slice(0, 200);
   const price = numberValue(body, "price");
   const cost = numberValue(body, "cost");
   const durationMinutes = numberValue(body, "durationMinutes", 60);
@@ -27,7 +29,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   await env.DB.prepare(`
     INSERT INTO services (id, name, category, price, duration_minutes, cost)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(id, name, stringValue(body, "category", "Подология"), price, Math.max(15, durationMinutes), cost).run();
+  `).bind(id, name, stringValue(body, "category", "Подология").slice(0, 100), price, Math.max(15, durationMinutes), cost).run();
   await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, after_json) VALUES (?, ?, 'service', ?, 'CREATE', ?)")
     .bind(newId(), user.id, id, JSON.stringify({ name })).run();
   return json({ ok: true, id }, 201);

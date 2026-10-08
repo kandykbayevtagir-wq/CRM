@@ -1,12 +1,12 @@
 import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, conflict, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { badRequest, boundedString, conflict, escapeLike, json, LIKE_ESCAPE, newId, optionalString, readJson } from "../_lib/http";
 import { phoneValue, requirePhone } from "../_lib/validation";
 
 function queryParts(request: Request) {
   const params = new URL(request.url).searchParams;
-  const query = params.get("q")?.trim() ?? "";
+  const query = (params.get("q")?.trim() ?? "").slice(0, 100);
   const status = params.get("status") ?? "active";
   const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
   const pageSize = Math.min(100, Math.max(10, Number(params.get("pageSize") ?? "25") || 25));
@@ -19,20 +19,17 @@ function queryParts(request: Request) {
     filters.push("c.is_active = 1");
   }
   if (query) {
-    filters.push("(c.full_name LIKE ? OR c.phone LIKE ? OR c.phone_normalized LIKE ?)");
-    bindings.push(`%${query}%`, `%${query}%`, `%${phoneValue({ phone: query })}%`);
+    filters.push(`(c.full_name LIKE ? ${LIKE_ESCAPE} OR c.phone LIKE ? ${LIKE_ESCAPE} OR c.phone_normalized LIKE ? ${LIKE_ESCAPE})`);
+    bindings.push(`%${escapeLike(query)}%`, `%${escapeLike(query)}%`, `%${escapeLike(phoneValue({ phone: query }) || query)}%`);
   }
 
   return { filters, bindings, page, pageSize, offset: (page - 1) * pageSize, query, status };
 }
 
-const clientSelect = `
-  SELECT c.id, c.full_name AS fullName, c.phone, c.email, c.notes,
-    c.created_at AS createdAt, c.updated_at AS updatedAt, c.is_active AS isActive,
-    COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) AS visits,
-    MAX(CASE WHEN a.status = 'COMPLETED' THEN a.starts_at END) AS lastVisit,
-    MIN(CASE WHEN a.starts_at >= CURRENT_TIMESTAMP AND a.status NOT IN ('CANCELLED', 'NO_SHOW', 'COMPLETED') THEN a.starts_at END) AS nextVisit,
-    COALESCE((
+// Specialists see only contact data of their own clients: internal notes and money totals stay hidden.
+function clientSelect(restricted: boolean) {
+  const notes = restricted ? "NULL AS notes" : "c.notes";
+  const total = restricted ? "NULL AS total" : `COALESCE((
       SELECT SUM(p.amount) FROM payments p
       INNER JOIN appointments paid_a ON paid_a.id = p.appointment_id
       WHERE paid_a.client_id = c.id AND paid_a.status = 'COMPLETED' AND p.payment_status = 'POSTED'
@@ -41,34 +38,43 @@ const clientSelect = `
       INNER JOIN payments refunded_p ON refunded_p.id = pa.payment_id
       INNER JOIN appointments refunded_a ON refunded_a.id = refunded_p.appointment_id
       WHERE refunded_a.client_id = c.id AND refunded_a.status = 'COMPLETED'
-    ), 0) AS total,
+    ), 0) AS total`;
+  return `
+  SELECT c.id, c.full_name AS fullName, c.phone, c.email, ${notes},
+    c.created_at AS createdAt, c.updated_at AS updatedAt, c.is_active AS isActive,
+    COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) AS visits,
+    MAX(CASE WHEN a.status = 'COMPLETED' THEN a.starts_at END) AS lastVisit,
+    MIN(CASE WHEN julianday(a.starts_at) >= julianday('now') AND a.status NOT IN ('CANCELLED', 'NO_SHOW', 'COMPLETED') THEN a.starts_at END) AS nextVisit,
+    ${total},
     CASE WHEN c.is_active = 0 THEN 'archived'
       WHEN COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) = 0 THEN 'new'
-      WHEN MAX(CASE WHEN a.status = 'COMPLETED' THEN a.starts_at END) >= datetime('now', 'localtime', '-90 days') THEN 'active'
+      WHEN MAX(CASE WHEN a.status = 'COMPLETED' THEN julianday(a.starts_at) END) >= julianday('now', '-90 days') THEN 'active'
       ELSE 'inactive' END AS status
   FROM clients c
   LEFT JOIN appointments a ON a.client_id = c.id
 `;
+}
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "clients.read")) return forbidden();
   const { filters, bindings, page, pageSize, offset, query, status } = queryParts(request);
-  if (user.role === "SPECIALIST") {
+  const restricted = user.role === "SPECIALIST";
+  if (restricted) {
     const employee = await env.DB.prepare("SELECT id FROM employees WHERE user_id = ? AND is_active = 1 LIMIT 1").bind(user.id).first<{ id: string }>();
-    if (!employee) return json({ ok: true, items: [], total: 0, page, pageSize, pages: 0, query, status });
+    if (!employee) return json({ ok: true, restricted, items: [], total: 0, page, pageSize, pages: 0, query, status });
     filters.push("EXISTS (SELECT 1 FROM appointments scoped_a WHERE scoped_a.client_id = c.id AND scoped_a.employee_id = ?)");
     bindings.push(employee.id);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const [result, count] = await Promise.all([
-    env.DB.prepare(`${clientSelect} ${where} GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`)
+    env.DB.prepare(`${clientSelect(restricted)} ${where} GROUP BY c.id ORDER BY julianday(c.updated_at) DESC LIMIT ? OFFSET ?`)
       .bind(...bindings, pageSize, offset).all(),
     env.DB.prepare(`SELECT COUNT(*) AS value FROM clients c ${where}`).bind(...bindings).first<{ value: number }>(),
   ]);
   const total = Number(count?.value ?? 0);
-  return json({ ok: true, items: result.results ?? [], total, page, pageSize, pages: Math.ceil(total / pageSize), query, status });
+  return json({ ok: true, restricted, items: result.results ?? [], total, page, pageSize, pages: Math.ceil(total / pageSize), query, status });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
@@ -76,8 +82,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "clients.write")) return forbidden();
   const body = await readJson(request);
-  const fullName = stringValue(body, "fullName");
-  const phoneRaw = stringValue(body, "phone");
+  const fullName = boundedString(body, "fullName", 200);
+  const phoneRaw = boundedString(body, "phone", 40);
   const phone = requirePhone(phoneValue(body));
   if (!fullName || fullName.length < 2 || !phone) return badRequest("Укажите имя и корректный телефон клиента");
   const duplicate = await env.DB.prepare("SELECT id, full_name AS fullName FROM clients WHERE phone_normalized = ? AND is_active = 1 LIMIT 1")

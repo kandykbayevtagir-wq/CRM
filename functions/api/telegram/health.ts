@@ -1,7 +1,4 @@
 import type { CrmEnv } from "../../_lib/env";
 
-export const onRequestGet: PagesFunction<CrmEnv> = ({ env }) => Response.json({
-  ok: true,
-  telegramSecretConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
-  databaseConfigured: Boolean(env.DB),
-});
+// Configuration details are not disclosed to anonymous callers; a bare liveness answer is enough for monitoring.
+export const onRequestGet: PagesFunction<CrmEnv> = () => Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });

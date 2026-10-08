@@ -1,8 +1,8 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, json, newId, numberValue, readJson, stringValue } from "../_lib/http";
+import { badRequest, json, newId, notFound, numberValue, readJson, stringValue } from "../_lib/http";
 
-const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+import { validShift } from "../../src/lib/appointments/schedule";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -36,7 +36,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const breakStartTime = stringValue(body, "breakStartTime") || null;
   const breakEndTime = stringValue(body, "breakEndTime") || null;
   const isActive = body.isActive === false || body.isActive === "false" ? 0 : 1;
-  if (!employeeId || dayOfWeek < 1 || dayOfWeek > 7 || !timePattern.test(startsTime) || !timePattern.test(endsTime) || startsTime >= endsTime || Boolean(breakStartTime && !timePattern.test(breakStartTime)) || Boolean(breakEndTime && !timePattern.test(breakEndTime))) return badRequest("Проверьте день и рабочий интервал");
+  if (!employeeId || !Number.isInteger(dayOfWeek) || dayOfWeek < 1 || dayOfWeek > 7 || !validShift(startsTime, endsTime, breakStartTime, breakEndTime)) return badRequest("Проверьте день и рабочий интервал");
   const employee = await env.DB.prepare("SELECT id FROM employees WHERE id = ? AND is_active = 1").bind(employeeId).first();
   if (!employee) return badRequest("Сотрудник не найден");
   const id = newId();
@@ -56,6 +56,8 @@ export const onRequestDelete: PagesFunction<CrmEnv> = async ({ request, env }) =
   if (!hasCrmPermission(user, "schedules.write")) return forbidden();
   const id = new URL(request.url).searchParams.get("id") ?? "";
   if (!id) return badRequest("Расписание не найдено");
-  await env.DB.prepare("DELETE FROM employee_schedules WHERE id = ?").bind(id).run();
+  const result = await env.DB.prepare("DELETE FROM employee_schedules WHERE id = ?").bind(id).run();
+  if (!result.meta.changes) return notFound("Расписание не найдено");
+  await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action) VALUES (?, ?, 'employee_schedule', ?, 'DELETE')").bind(newId(), user.id, id).run();
   return json({ ok: true });
 };

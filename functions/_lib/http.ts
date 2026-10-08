@@ -1,3 +1,5 @@
+import { HttpError } from "./security";
+
 export type JsonRecord = Record<string, unknown>;
 
 export function json<T>(data: T, status = 200, extraHeaders: HeadersInit = {}) {
@@ -12,13 +14,28 @@ export function json<T>(data: T, status = 200, extraHeaders: HeadersInit = {}) {
 }
 
 export async function readJson(request: Request): Promise<JsonRecord> {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new HttpError(415, "JSON_REQUIRED", "Ожидается JSON-запрос");
+  const reader = request.body?.getReader();
+  if (!reader) throw new HttpError(400, "INVALID_JSON", "Тело запроса отсутствует");
+  const decoder = new TextDecoder();
+  let text = "";
+  let size = 0;
   try {
-    const value: unknown = await request.json();
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? value as JsonRecord
-      : {};
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 131072) { await reader.cancel(); throw new HttpError(413, "BODY_TOO_LARGE", "Слишком большой запрос"); }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally { reader.releaseLock(); }
+  try {
+    const value: unknown = JSON.parse(text);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("object required");
+    return value as JsonRecord;
   } catch {
-    return {};
+    throw new HttpError(400, "INVALID_JSON", "Некорректный JSON-запрос");
   }
 }
 
@@ -27,11 +44,23 @@ export function stringValue(body: JsonRecord, key: string, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
-export function optionalString(body: JsonRecord, key: string) {
+export function optionalString(body: JsonRecord, key: string, maxLength = 2000) {
   const value = body[key];
   if (value === null || value === undefined) return null;
-  return typeof value === "string" ? value.trim() : null;
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : null;
 }
+
+/** Trimmed string limited to `maxLength` characters; longer input is cut, never rejected. */
+export function boundedString(body: JsonRecord, key: string, maxLength: number, fallback = "") {
+  return stringValue(body, key, fallback).slice(0, maxLength);
+}
+
+/** Escapes LIKE wildcards so user input matches literally; use with `LIKE ? ESCAPE '\\'`. */
+export function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+export const LIKE_ESCAPE = "ESCAPE '\\'";
 
 export function numberValue(body: JsonRecord, key: string, fallback = 0) {
   const value = body[key];

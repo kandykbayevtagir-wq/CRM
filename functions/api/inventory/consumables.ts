@@ -24,11 +24,13 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!serviceId || !productId || quantity === null || quantity <= 0) return badRequest("Укажите услугу, товар и положительное количество");
   if (!await env.DB.prepare("SELECT id FROM services WHERE id = ? AND is_active = 1").bind(serviceId).first()) return badRequest("Услуга не найдена");
   if (!await env.DB.prepare("SELECT id FROM products WHERE id = ? AND is_active = 1").bind(productId).first()) return badRequest("Товар не найден");
+  const branchId = optionalString(body, "branchId") || null;
+  if (branchId && !await env.DB.prepare("SELECT id FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first()) return badRequest("Филиал не найден");
   const id = newId();
   try {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO service_consumables (id, service_id, product_id, branch_id, quantity) VALUES (?, ?, ?, ?, ?)").bind(id, serviceId, productId, optionalString(body, "branchId"), quantity),
-      auditStatement(env.DB, user, "service_consumable", id, "CREATE", null, { serviceId, productId, quantity, branchId: optionalString(body, "branchId") }),
+      env.DB.prepare("INSERT INTO service_consumables (id, service_id, product_id, branch_id, quantity) VALUES (?, ?, ?, ?, ?)").bind(id, serviceId, productId, branchId, quantity),
+      auditStatement(env.DB, user, "service_consumable", id, "CREATE", null, { serviceId, productId, quantity, branchId }),
     ]);
   } catch (error) {
     if (/unique/i.test(error instanceof Error ? error.message : "")) return badRequest("Такой расходник уже привязан к услуге");

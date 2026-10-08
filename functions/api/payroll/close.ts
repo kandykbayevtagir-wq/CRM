@@ -10,9 +10,5 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const body = await readJson(request);
   const periodId = stringValue(body, "periodId");
   if (!periodId) return badRequest("Расчётный период не указан");
-  try {
-    return json({ ok: true, result: await closePayrollPeriod(env.DB, periodId, user) });
-  } catch (error) {
-    return badRequest(error instanceof Error ? error.message : "Не удалось закрыть зарплатный период");
-  }
+  return json({ ok: true, result: await closePayrollPeriod(env.DB, periodId, user) });
 };

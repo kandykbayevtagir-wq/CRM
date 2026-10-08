@@ -28,6 +28,12 @@ export function boundedPercent(value: unknown): number | null {
   return number !== null && number <= 100 ? number : null;
 }
 
+export function nonNegativeMoney(value: unknown, label: string): number | null {
+  const amount = nonNegativeNumber(value, label);
+  if (amount === null || !Number.isSafeInteger(Math.round(amount * 100)) || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return null;
+  return amount;
+}
+
 export function validDateRange(start: string, end: string): boolean {
   const startDate = new Date(start);
   const endDate = new Date(end);

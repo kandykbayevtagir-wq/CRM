@@ -6,7 +6,10 @@ function nationalDigits(value: string) {
   const trimmed = value.trim();
   const digits = digitsOnly(trimmed);
   if (!digits) return "";
-  if (trimmed.startsWith("+7") && digits.startsWith("7")) return digits.slice(1);
+  if (trimmed.startsWith("+7") && digits.startsWith("7")) {
+    const national = digits.slice(1);
+    return national.length === 11 && national.startsWith("8") ? national.slice(1) : national;
+  }
   if (digits.length === 11 && (digits.startsWith("7") || digits.startsWith("8"))) return digits.slice(1);
   if (digits.length === 10) return digits;
   return digits;
@@ -17,7 +20,9 @@ export function normalizePhone(value: string): string {
   const trimmed = value.trim();
   const digits = digitsOnly(trimmed);
   if (trimmed.startsWith("+7") && digits.startsWith("7")) {
-    const national = digits.slice(1);
+    let national = digits.slice(1);
+    // "+7 8 700 123 45 67": the trunk prefix 8 copied from a contact card is dropped.
+    if (national.length === 11 && national.startsWith("8")) national = national.slice(1);
     return national.length <= 10 ? (national.length === 10 ? `7${national}` : national) : `7${national}`;
   }
   if (digits.length === 11 && digits.startsWith("8")) return `7${digits.slice(1)}`;

@@ -2,6 +2,7 @@ import { auditStatement } from "../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson } from "../_lib/http";
+import { inRange, localMonthRange, organizationTimezone } from "../_lib/dates";
 import { branchIds, employeeValues, serviceIds } from "../_lib/employee";
 import { optionalPhoneValue } from "../_lib/validation";
 
@@ -12,21 +13,30 @@ const employeeQuery = `
     e.fixed_salary AS fixedSalary, e.revenue_percent AS revenuePercent,
     e.is_active AS isActive, e.user_id AS userId,
     (SELECT group_concat(es.service_id, ',') FROM employee_services es WHERE es.employee_id = e.id AND es.active = 1 AND es.branch_id IS NULL) AS serviceIds,
-    (SELECT COUNT(*) FROM appointments ea WHERE ea.employee_id = e.id AND ea.status NOT IN ('CANCELLED', 'NO_SHOW') AND strftime('%Y-%m', ea.starts_at) = strftime('%Y-%m', 'now', 'localtime')) AS appointments,
-    (SELECT COALESCE(SUM(p.amount), 0) FROM payments p INNER JOIN appointments pa ON pa.id = p.appointment_id WHERE pa.employee_id = e.id AND pa.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND strftime('%Y-%m', p.paid_at) = strftime('%Y-%m', 'now', 'localtime'))
-      - (SELECT COALESCE(SUM(r.amount), 0) FROM payment_adjustments r INNER JOIN payments rp ON rp.id = r.payment_id INNER JOIN appointments ra ON ra.id = rp.appointment_id WHERE ra.employee_id = e.id AND ra.status = 'COMPLETED' AND strftime('%Y-%m', r.occurred_at) = strftime('%Y-%m', 'now', 'localtime')) AS revenue
+    (SELECT COUNT(*) FROM appointments ea WHERE ea.employee_id = e.id AND ea.status NOT IN ('CANCELLED', 'NO_SHOW') AND ${inRange("ea.starts_at")}) AS appointments,
+    (SELECT COALESCE(SUM(p.amount), 0) FROM payments p INNER JOIN appointments pa ON pa.id = p.appointment_id WHERE pa.employee_id = e.id AND pa.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND ${inRange("p.paid_at")})
+      - (SELECT COALESCE(SUM(r.amount), 0) FROM payment_adjustments r INNER JOIN payments rp ON rp.id = r.payment_id INNER JOIN appointments ra ON ra.id = rp.appointment_id WHERE ra.employee_id = e.id AND ra.status = 'COMPLETED' AND ${inRange("r.occurred_at")}) AS revenue
   FROM employees e
   LEFT JOIN branches b ON b.id = e.branch_id
   ORDER BY e.is_active DESC, e.full_name ASC
 `;
 
+// Salary terms and revenue are payroll data: only roles with payroll.read receive them.
+const payrollFields = ["fixedSalary", "revenuePercent", "revenue"] as const;
+
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "employees.read")) return forbidden();
-  const result = await env.DB.prepare(employeeQuery).all();
-  const items = (result.results ?? []).map((item) => ({ ...item, serviceIds: typeof item.serviceIds === "string" ? item.serviceIds.split(",").filter(Boolean) : [] }));
-  return json({ ok: true, items });
+  const month = localMonthRange(await organizationTimezone(env.DB));
+  const canSeePayroll = hasCrmPermission(user, "payroll.read");
+  const result = await env.DB.prepare(employeeQuery).bind(month.from, month.to, month.from, month.to, month.from, month.to).all();
+  const items = (result.results ?? []).map((item) => {
+    const row: Record<string, unknown> = { ...item, serviceIds: typeof item.serviceIds === "string" ? item.serviceIds.split(",").filter(Boolean) : [] };
+    if (!canSeePayroll) for (const field of payrollFields) delete row[field];
+    return row;
+  });
+  return json({ ok: true, items, payrollVisible: canSeePayroll });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {

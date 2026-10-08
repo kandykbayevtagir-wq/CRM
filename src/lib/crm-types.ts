@@ -57,11 +57,16 @@ export type ClientRecord = {
 
 export type AppointmentRecord = {
   id: string;
+  /** Optimistic-concurrency version; every PATCH sends it back. */
+  revision?: number;
   startsAt: string;
   endsAt?: string | null;
   status: string;
   amount: number;
   notes: string | null;
+  clientId?: string;
+  employeeId?: string | null;
+  branchId?: string | null;
   clientName: string;
   clientPhone: string;
   serviceName: string | null;
@@ -70,7 +75,11 @@ export type AppointmentRecord = {
   paidAmount?: number;
   balance?: number;
   source?: string | null;
+  cancelReason?: string | null;
 };
+
+export type AppointmentsResponse = { ok: true; items: AppointmentRecord[]; total?: number; page?: number; pageSize?: number; pages?: number };
+export type ClientsResponse = { ok: true; items: ClientRecord[]; total: number; page: number; pageSize: number; pages: number; restricted?: boolean };
 
 export type EmployeeRecord = {
   id: string;
@@ -80,14 +89,18 @@ export type EmployeeRecord = {
   email: string | null;
   branchId: string | null;
   branchName: string | null;
-  fixedSalary: number;
-  revenuePercent: number;
+  /** Present only for roles with payroll.read. */
+  fixedSalary?: number;
+  revenuePercent?: number;
   isActive: number;
   appointments: number;
-  revenue: number;
+  /** Present only for roles with payroll.read. */
+  revenue?: number;
   userId?: string | null;
   serviceIds?: string[];
 };
+
+export type EmployeesResponse = { ok: true; items: EmployeeRecord[]; payrollVisible?: boolean };
 
 export type ExpenseRecord = {
   id: string;
@@ -112,8 +125,10 @@ export type DashboardResponse = {
     todayAppointments: number;
     monthAppointments: number;
     revenue: number;
-    expenses: number;
-    payroll: number;
+    /** null when the role may not read finance. */
+    expenses: number | null;
+    /** null when the role may not read payroll. */
+    payroll: number | null;
     activeEmployees: number;
     grossRevenue?: number;
     refunds?: number;
@@ -126,6 +141,7 @@ export type DashboardResponse = {
   };
   upcoming: Array<AppointmentRecord>;
   revenueByDay: Array<{ day: string; amount: number }>;
+  period?: { from: string; to: string; timezone: string };
 };
 
 export type SettingsResponse = {
@@ -149,10 +165,17 @@ export type ServiceRecord = {
   name: string;
   category: string;
   price: number;
-  cost?: number;
+  /** null when the role may not see cost prices. */
+  cost?: number | null;
   durationMinutes: number;
   isActive: number;
 };
+
+export type ServicesResponse = { ok: true; items: ServiceRecord[]; costVisible?: boolean };
+
+export type RentRecord = { id: string; branchId: string; branchName: string | null; periodStart: string; amount: number; dueDate: string; status: string; paidAt: string | null; note: string | null };
+export type UtilityRecord = { id: string; branchId: string; branchName: string | null; kind: string; periodStart: string; previousMeterValue: number; currentMeterValue: number; consumption: number; tariff: number; fixedFee: number; amount: number; dueDate: string; status: string; paidAt: string | null; note: string | null };
+export type ReconciliationCheck = { key: string; label: string; sourceAmount: number; ledgerAmount: number; difference: number; sourceCount: number; ledgerCount: number; ok: boolean };
 
 export type AvailabilitySlot = {
   startsAt: string;

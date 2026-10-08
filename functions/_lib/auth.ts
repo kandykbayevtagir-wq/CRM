@@ -29,14 +29,16 @@ function getCookie(request: Request, name: string) {
   const cookieHeader = request.headers.get("cookie") ?? "";
   for (const cookie of cookieHeader.split(";")) {
     const [key, ...value] = cookie.trim().split("=");
-    if (key === name) return decodeURIComponent(value.join("="));
+    if (key === name) {
+      try { return decodeURIComponent(value.join("=")); } catch { return null; }
+    }
   }
   return null;
 }
 
 export async function getSessionUser(request: Request, db: D1Database): Promise<AuthUser | null> {
   const rawToken = getCookie(request, SESSION_COOKIE);
-  if (!rawToken) return null;
+  if (!rawToken || rawToken.length > 256) return null;
 
   const tokenHash = await sha256Hex(rawToken);
   const row = await db.prepare(`
@@ -45,7 +47,7 @@ export async function getSessionUser(request: Request, db: D1Database): Promise<
       u.client_id AS clientId, u.phone, u.notifications_allowed AS notificationsAllowed
     FROM sessions s
     INNER JOIN users u ON u.id = s.user_id
-    WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1
+    WHERE s.id = ? AND julianday(s.expires_at) > julianday('now') AND u.active = 1
     LIMIT 1
   `).bind(tokenHash).first<AuthUser>();
 
@@ -81,14 +83,15 @@ export async function createSession(db: D1Database, userId: string) {
   const rawToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const tokenHash = await sha256Hex(rawToken);
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
-  await db.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
-    .bind(tokenHash, userId, expiresAt)
-    .run();
+  await db.batch([
+    db.prepare("DELETE FROM sessions WHERE user_id = ? AND julianday(expires_at) < julianday('now')").bind(userId),
+    db.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)").bind(tokenHash, userId, expiresAt),
+  ]);
   return rawToken;
 }
 
 export function sessionCookie(rawToken: string) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(rawToken)}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=${encodeURIComponent(rawToken)}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=None`;
 }
 
 export async function destroySession(request: Request, db: D1Database) {
@@ -98,5 +101,5 @@ export async function destroySession(request: Request, db: D1Database) {
 }
 
 export function clearedSessionCookie() {
-  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None`;
 }

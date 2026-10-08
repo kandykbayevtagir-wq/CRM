@@ -3,6 +3,7 @@
   "name": "podologymk-notifications",
   "main": "./workers/notifications.ts",
   "compatibility_date": "2026-08-08",
+  "vars": { "MINI_APP_URL": "https://podologymk-crm.pages.dev" },
   "d1_databases": [
     {
       "binding": "DB",
@@ -11,6 +12,6 @@
     }
   ],
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["* * * * *"]
   }
 }

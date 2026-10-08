@@ -1,7 +1,8 @@
 import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, dateValue, json, notFound, readJson, stringValue } from "../../_lib/http";
+import { badRequest, json, notFound, readJson, stringValue } from "../../_lib/http";
+import { organizationTimezone, zonedDateValue } from "../../_lib/dates";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -19,7 +20,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   if (!["OPEN", "BOOKED", "DONE", "CANCELLED"].includes(status)) return badRequest("Некорректный статус follow-up");
   await env.DB.batch([
     env.DB.prepare("UPDATE follow_ups SET status = ?, recommended_date = ?, completed_at = CASE WHEN ? IN ('DONE', 'BOOKED') THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE completed_at END, completed_by = CASE WHEN ? IN ('DONE', 'BOOKED') THEN ? ELSE completed_by END, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .bind(status, dateValue(body, "recommendedDate") || existing.recommended_date, status, status, user.id, id),
+      .bind(status, zonedDateValue(body, "recommendedDate", await organizationTimezone(env.DB)) || existing.recommended_date, status, status, user.id, id),
     auditStatement(env.DB, user, "follow_up", id, "UPDATE", { status: existing.status }, { status }),
   ]);
   return json({ ok: true });

@@ -1,1 +1,4 @@
+# Static export knows only /clients/placeholder; real ids are resolved in the browser.
+/clients/ /clients 301
+/clients/*.txt /clients/placeholder.txt 200
 /clients/* /clients/placeholder 200

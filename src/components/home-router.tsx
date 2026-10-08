@@ -6,6 +6,7 @@ import { AuthHint, ErrorState, isAuthError, LoadingState } from "@/components/da
 import { ClientAppointmentsView, ClientBookingView, ClientHomeView, ClientLoyaltyView } from "@/components/client-views";
 import { DashboardView } from "@/components/dashboard-view";
 import { AppointmentsView } from "@/components/appointments-view";
+import { TodayView } from "@/components/today-view";
 import type { AuthResponse } from "@/lib/crm-types";
 import { useApi } from "@/lib/use-api";
 
@@ -23,5 +24,6 @@ export function HomeRouter() {
     return <ClientHomeView />;
   }
   if (data?.user.role === "SPECIALIST") return <AppointmentsView />;
+  if (data?.user.role === "ADMINISTRATOR") return <TodayView />;
   return <DashboardView />;
 }

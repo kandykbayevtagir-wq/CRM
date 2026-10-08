@@ -1,3 +1,4 @@
+import { getActiveClientId } from "../../_lib/access";
 import { forbidden, getSessionUser, isClient, unauthorized } from "../../_lib/auth";
 import { auditStatement } from "../../_lib/audit";
 import type { CrmEnv } from "../../_lib/env";
@@ -10,29 +11,33 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!isClient(user)) return forbidden();
   const client = user.clientId
     ? await env.DB.prepare(`
-        SELECT id, full_name AS fullName, phone, email, notes, created_at AS createdAt,
+        SELECT id, full_name AS fullName, phone, email, profile_notes AS notes, created_at AS createdAt, is_active AS isActive,
           (SELECT points_balance FROM loyalty_accounts la WHERE la.client_id = c.id) AS pointsBalance
         FROM clients c WHERE c.id = ?
-      `).bind(user.clientId).first()
+      `).bind(user.clientId).first<{ isActive: number } & Record<string, unknown>>()
     : null;
   const consents = user.clientId
     ? await env.DB.prepare("SELECT kind, version, granted_at AS grantedAt FROM client_consents WHERE client_id = ? AND revoked_at IS NULL ORDER BY kind ASC").bind(user.clientId).all()
     : { results: [] };
-  return json({ ok: true, user, profile: client, consents: consents.results ?? [] });
+  // An archived card is reported as such: the portal shows a contact-the-centre notice instead of onboarding.
+  const archived = Boolean(client && Number(client.isActive) === 0);
+  return json({ ok: true, user, profile: archived ? null : client, archived, consents: consents.results ?? [] });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!isClient(user)) return forbidden();
+  if (user.clientId && !await getActiveClientId(env.DB, user)) return forbidden("Карточка клиента архивирована. Обратитесь к администратору центра.");
   const body = await readJson(request);
-  const fullName = stringValue(body, "fullName");
-  const phoneRaw = stringValue(body, "phone");
+  const fullName = stringValue(body, "fullName").slice(0, 200);
+  const phoneRaw = stringValue(body, "phone").slice(0, 40);
   const phone = requirePhone(phoneValue({ phone: phoneRaw }));
-  if (!fullName) return badRequest("Проверьте данные", { fullName: "Введите имя и фамилию" });
+  if (!fullName || fullName.length < 2) return badRequest("Проверьте данные", { fullName: "Введите имя и фамилию" });
   if (!phone) return badRequest("Проверьте данные", { phone: "Введите 10 цифр после +7" });
-  const email = optionalString(body, "email");
-  const notes = optionalString(body, "notes");
+  const email = optionalString(body, "email", 200);
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return badRequest("Проверьте данные", { email: "Некорректный email" });
+  const notes = optionalString(body, "notes", 1000);
   const existingByPhone = await env.DB.prepare(`
     SELECT c.id
     FROM clients c
@@ -45,15 +50,18 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (existingByPhone && !user.clientId) return badRequest("Проверьте данные", { phone: "Этот номер уже используется в CRM. Для защиты данных обратитесь администратору." });
   const clientId = user.clientId ?? newId();
   const statements: D1PreparedStatement[] = [];
-  const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
+  const before = user.clientId ? await env.DB.prepare("SELECT full_name AS fullName, phone, email, profile_notes AS notes FROM clients WHERE id = ?").bind(user.clientId).first<Record<string, unknown>>() : null;
   if (user.clientId) {
-    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
+    statements.push(env.DB.prepare("UPDATE clients SET full_name = ?, phone = ?, phone_normalized = ?, email = ?, profile_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(fullName, phoneRaw, phone, email, notes, clientId));
   } else {
-    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));
+    statements.push(env.DB.prepare("INSERT INTO clients (id, full_name, phone, phone_normalized, email, profile_notes, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)").bind(clientId, fullName, phoneRaw, phone, email, notes));
   }
   statements.push(env.DB.prepare("UPDATE users SET client_id = ?, phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(clientId, phone, user.id));
   statements.push(env.DB.prepare("INSERT OR IGNORE INTO client_consents (id, client_id, kind, version) VALUES (?, ?, 'PRIVACY', '2026-08-10')").bind(newId(), clientId));
   const allowReminders = body.allowReminders === true || body.allowReminders === "true";
+  // Marketing messages need a separate, explicit opt-in; campaigns are delivered only to clients holding it.
+  const marketingProvided = body.allowMarketing !== undefined;
+  const allowMarketing = body.allowMarketing === true || body.allowMarketing === "true";
   statements.push(env.DB.prepare("UPDATE users SET notifications_allowed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(allowReminders ? 1 : 0, user.id));
   if (allowReminders) {
     statements.push(env.DB.prepare("INSERT OR IGNORE INTO client_consents (id, client_id, kind, version, revoked_at) VALUES (?, ?, 'REMINDERS', '2026-08-10', NULL)").bind(newId(), clientId));
@@ -61,7 +69,15 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   } else {
     statements.push(env.DB.prepare("UPDATE client_consents SET revoked_at = CURRENT_TIMESTAMP WHERE client_id = ? AND kind = 'REMINDERS' AND revoked_at IS NULL").bind(clientId));
   }
-  statements.push(auditStatement(env.DB, user, "client", clientId, before ? "UPDATE" : "CREATE", before, { fullName, phone: phoneRaw, phoneNormalized: phone, email, notes, remindersAllowed: allowReminders }));
+  if (marketingProvided) {
+    if (allowMarketing) {
+      statements.push(env.DB.prepare("INSERT OR IGNORE INTO client_consents (id, client_id, kind, version, revoked_at) VALUES (?, ?, 'MARKETING', '2026-10-01', NULL)").bind(newId(), clientId));
+      statements.push(env.DB.prepare("UPDATE client_consents SET revoked_at = NULL WHERE client_id = ? AND kind = 'MARKETING' AND version = '2026-10-01'").bind(clientId));
+    } else {
+      statements.push(env.DB.prepare("UPDATE client_consents SET revoked_at = CURRENT_TIMESTAMP WHERE client_id = ? AND kind = 'MARKETING' AND revoked_at IS NULL").bind(clientId));
+    }
+  }
+  statements.push(auditStatement(env.DB, user, "client", clientId, before ? "UPDATE" : "CREATE", before, { fullName, phone: phoneRaw, phoneNormalized: phone, email, notes, remindersAllowed: allowReminders, ...(marketingProvided ? { marketingAllowed: allowMarketing } : {}) }));
   await env.DB.batch(statements);
   return json({ ok: true, clientId });
 };

@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, now, numberValue, readJson, stringValue } from "../_lib/http";
+import { validShift } from "../../src/lib/appointments/schedule";
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -22,16 +23,19 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "settings.write")) return forbidden();
   const body = await readJson(request);
-  const brandName = stringValue(body, "brandName");
+  const brandName = stringValue(body, "brandName").slice(0, 120);
   const currency = stringValue(body, "currency", "KZT");
   const timezone = stringValue(body, "timezone", "Asia/Almaty");
   const bookingStartTime = stringValue(body, "bookingStartTime", "09:00");
   const bookingEndTime = stringValue(body, "bookingEndTime", "18:00");
   const bookingSlotInterval = Math.min(120, Math.max(15, numberValue(body, "bookingSlotInterval", 30)));
-  const workingDays = stringValue(body, "workingDays", "1,2,3,4,5,6").split(",").map((day) => Number(day.trim())).filter((day) => day >= 1 && day <= 7).join(",") || "1,2,3,4,5,6";
+  const workingDays = [...new Set(stringValue(body, "workingDays", "1,2,3,4,5,6").split(",").map((day) => Number(day.trim())).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7))].sort().join(",") || "1,2,3,4,5,6";
   const cancellationWindowHours = Math.min(72, Math.max(0, numberValue(body, "cancellationWindowHours", 2)));
   const loyaltyPointsPer1000 = Math.min(100, Math.max(0, numberValue(body, "loyaltyPointsPer1000", 1)));
   if (!brandName) return badRequest("Название организации обязательно");
+  if (!validShift(bookingStartTime, bookingEndTime, null, null)) return badRequest("Проверьте часы работы центра");
+  try { new Intl.DateTimeFormat("ru-RU", { timeZone: timezone }).format(); } catch { return badRequest("Неизвестный часовой пояс"); }
+  if (currency !== "KZT") return badRequest("Финансовый учёт ведётся в KZT");
   await env.DB.prepare(`
     UPDATE organization_settings SET brand_name = ?, currency = ?, timezone = ?, booking_start_time = ?, booking_end_time = ?,
       booking_slot_interval = ?, working_days = ?, cancellation_window_hours = ?, loyalty_points_per_1000 = ?, updated_at = ? WHERE id = 1

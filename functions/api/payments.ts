@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, conflict, dateValue, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { badRequest, conflict, json, newId, notFound, optionalString, readJson, stringValue } from "../_lib/http";
+import { isoColumn, organizationTimezone, zonedDateValue } from "../_lib/dates";
 import { nonNegativeNumber } from "../_lib/validation";
 
 const methods = new Set(["CASH", "CARD", "TRANSFER", "QR", "OTHER"]);
@@ -12,11 +13,11 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const params = new URL(request.url).searchParams;
   const appointmentId = params.get("appointmentId")?.trim();
   const rows = await env.DB.prepare(`
-    SELECT p.id, p.appointment_id AS appointmentId, p.amount, p.method, p.payment_status AS status, p.paid_at AS paidAt, p.note,
+    SELECT p.id, p.appointment_id AS appointmentId, p.amount, p.method, p.payment_status AS status, ${isoColumn("p.paid_at")} AS paidAt, p.note,
       a.total_amount AS appointmentAmount, c.full_name AS clientName,
       COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa WHERE pa.payment_id = p.id), 0) AS refundedAmount
     FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id INNER JOIN clients c ON c.id = a.client_id
-    ${appointmentId ? "WHERE p.appointment_id = ?" : ""} ORDER BY p.paid_at DESC LIMIT 300
+    ${appointmentId ? "WHERE p.appointment_id = ?" : ""} ORDER BY julianday(p.paid_at) DESC LIMIT 300
   `).bind(...(appointmentId ? [appointmentId] : [])).all();
   return json({ ok: true, items: rows.results ?? [] });
 };
@@ -32,6 +33,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const method = methods.has(methodValue) ? methodValue : "";
   const idempotencyKey = optionalString(body, "idempotencyKey") || newId();
   if (!appointmentId || amount === null || amount <= 0 || !method) return badRequest("Укажите запись, положительную сумму и способ оплаты");
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return badRequest("Сумма должна содержать не более двух знаков после запятой");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [appointmentId, amount.toFixed(2), method].join("|");
   const previousPayment = await env.DB.prepare("SELECT payment_id AS paymentId, user_id AS userId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? LIMIT 1").bind(idempotencyKey).first<{ paymentId: string; userId: string; requestHash: string }>();
@@ -39,19 +41,19 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (previousPayment && previousPayment.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой оплаты");
   if (previousPayment) return json({ ok: true, id: previousPayment.paymentId, paymentId: previousPayment.paymentId, replayed: true });
   const appointment = await env.DB.prepare("SELECT id, branch_id AS branchId, total_amount AS totalAmount, status FROM appointments WHERE id = ?").bind(appointmentId).first<{ id: string; branchId: string; totalAmount: number; status: string }>();
-  if (!appointment) return badRequest("Запись не найдена");
+  if (!appointment) return notFound("Запись не найдена");
   if (["CANCELLED", "NO_SHOW"].includes(appointment.status)) return badRequest("Нельзя принять оплату по отменённой записи");
   const paid = await env.DB.prepare("SELECT COALESCE(SUM(p.amount), 0) - COALESCE((SELECT SUM(pa.amount) FROM payment_adjustments pa INNER JOIN payments rp ON rp.id = pa.payment_id WHERE rp.appointment_id = ?), 0) AS value FROM payments p WHERE p.appointment_id = ? AND p.payment_status = 'POSTED'")
     .bind(appointmentId, appointmentId).first<{ value: number }>();
   const balance = Number(appointment.totalAmount ?? 0) - Number(paid?.value ?? 0);
   if (amount > balance + 0.005) return conflict(`Сумма превышает остаток: ${Math.max(0, balance).toFixed(2)} ₸`);
-  const paidAt = dateValue(body, "paidAt") || new Date().toISOString();
+  const paidAt = zonedDateValue(body, "paidAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   const paymentId = newId();
   const transactionId = newId();
   const dbMethod = method === "QR" ? "TRANSFER" : method;
-  const note = method === "QR" ? `[QR] ${optionalString(body, "note") ?? ""}`.trim() : optionalString(body, "note");
+  const note = method === "QR" ? `[QR] ${optionalString(body, "note", 500) ?? ""}`.trim() : optionalString(body, "note", 500);
   try {
-    const results = await env.DB.batch([
+    await env.DB.batch([
       // The balance check is part of the INSERT. The earlier read is only for
       // a friendly error; it must not be the concurrency guard.
       env.DB.prepare(`
@@ -72,7 +74,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
         SELECT ?, ?, 'payment', ?, 'CREATE', NULL, ? WHERE EXISTS (SELECT 1 FROM payments WHERE id = ?)`)
         .bind(newId(), user.id, paymentId, JSON.stringify({ appointmentId, amount, method, paidAt }), paymentId),
     ]);
-    if (Number(results[0]?.meta.changes ?? 0) !== 1) return conflict("Оплата превышает актуальный остаток или запись уже закрыта");
+    if (!await env.DB.prepare("SELECT id FROM payments WHERE id = ?").bind(paymentId).first()) return conflict("Оплата превышает актуальный остаток или запись уже закрыта");
   } catch (error) {
     if (/unique|constraint/i.test(error instanceof Error ? error.message : "")) {
       const replay = await env.DB.prepare("SELECT payment_id AS paymentId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ paymentId: string; requestHash: string }>();

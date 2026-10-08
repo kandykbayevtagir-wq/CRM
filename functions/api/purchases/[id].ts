@@ -2,6 +2,11 @@ import { auditStatement } from "../../_lib/audit";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
+import { nonNegativeNumber } from "../../_lib/validation";
+
+const paymentMethods = new Set(["CASH", "CARD", "TRANSFER", "OTHER"]);
+// Receipt is driven by stock movements; the manual status machine must not undo received stock.
+const transitions: Record<string, string[]> = { DRAFT: ["DRAFT", "ORDERED", "CANCELLED"], ORDERED: ["ORDERED", "DRAFT", "CANCELLED"], PARTIALLY_RECEIVED: ["PARTIALLY_RECEIVED"], RECEIVED: ["RECEIVED"], CANCELLED: ["CANCELLED"] };
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -24,14 +29,17 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const existing = await env.DB.prepare("SELECT id, status, comment, payment_method AS paymentMethod, paid_amount AS paidAmount FROM purchases WHERE id = ?").bind(id).first<Record<string, unknown>>();
   if (!existing) return notFound("Закупка не найдена");
   const body = await readJson(request);
-  const status = stringValue(body, "status", String(existing.status ?? "DRAFT")).toUpperCase();
+  const currentStatus = String(existing.status ?? "DRAFT");
+  const status = stringValue(body, "status", currentStatus).toUpperCase();
   if (!["DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"].includes(status)) return badRequest("Некорректный статус закупки");
-  if (status === "RECEIVED") {
-    const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM purchase_items WHERE purchase_id = ? AND received_quantity < ordered_quantity").bind(id).first<{ count: number }>();
-    if (Number(pending?.count ?? 0) > 0) return badRequest("Сначала примите все позиции полностью или используйте частичную поставку");
-  }
+  if (!(transitions[currentStatus] ?? []).includes(status)) return badRequest(currentStatus === "CANCELLED" ? "Отменённую закупку нельзя изменить" : "Статус приёмки меняется только через приём товара");
+  const paidAmount = nonNegativeNumber(body.paidAmount ?? existing.paidAmount ?? 0, "Оплачено");
+  if (paidAmount === null) return badRequest("Оплаченная сумма должна быть неотрицательным числом");
+  const paymentMethodRaw = optionalString(body, "paymentMethod");
+  const paymentMethod = paymentMethodRaw === null ? (existing.paymentMethod as string | null) ?? null : paymentMethodRaw.toUpperCase();
+  if (paymentMethod && !paymentMethods.has(paymentMethod)) return badRequest("Некорректный способ оплаты закупки");
   await env.DB.batch([
-    env.DB.prepare("UPDATE purchases SET status = ?, paid_amount = ?, payment_method = ?, comment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, Number(body.paidAmount ?? existing.paidAmount ?? 0), optionalString(body, "paymentMethod") ?? existing.paymentMethod ?? null, optionalString(body, "comment") ?? existing.comment ?? null, id),
+    env.DB.prepare("UPDATE purchases SET status = ?, paid_amount = ?, payment_method = ?, comment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, paidAmount, paymentMethod, optionalString(body, "comment", 1000) ?? existing.comment ?? null, id),
     auditStatement(env.DB, user, "purchase", id, "UPDATE", { status: existing.status }, { status }),
   ]);
   return json({ ok: true });

@@ -33,7 +33,7 @@ export function ClientShell({ children, user }: { children: ReactNode; user?: Au
         <Link href="/" className="client-brand"><span className="brand-symbol">p</span><span><strong>podologymk</strong><small>Ваш личный кабинет</small></span></Link>
         <span className="client-avatar">{user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "P"}</span>
       </header>
-      <main className="client-content page-transition">{children}</main>
+      <main id="main-content" tabIndex={-1} className="client-content page-transition">{children}</main>
       <nav className="client-bottom-nav" aria-label="Навигация клиента">
         <Link href="/" className={navClass("/")} aria-current={pathname === "/" ? "page" : undefined}><Home size={19} /><span>Главная</span></Link>
         <Link href="/client/book" className={`${navClass("/client/book")} client-nav-primary`} aria-current={pathname === "/client/book" ? "page" : undefined}><CalendarDays size={20} /><span>Записаться</span></Link>

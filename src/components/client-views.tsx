@@ -6,16 +6,16 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { ArrowRight, CalendarDays, Check, ChevronLeft, Clock3, Gift, MapPin, MessageCircle, RefreshCw, ShieldCheck, Star, UserRound } from "lucide-react";
 
 import { ApiError, apiFetch, dispatchCrmEvent } from "@/lib/api-client";
-import { AuthHint, EmptyState, ErrorState, FormField, InlineError, isAuthError, LoadingState } from "@/components/data-state";
+import { AuthHint, EmptyState, ErrorState, FormField, InlineError, isAuthError, LoadingState, Modal } from "@/components/data-state";
 import { Amount, Button, SectionCard, StatusPill } from "@/components/ui";
 import type { AvailabilityResponse, AvailabilitySlot, Branch, ClientAppointment, LoyaltyResponse, ServiceRecord } from "@/lib/crm-types";
-import { formatCurrency, formatDateTime, initials } from "@/lib/format";
+import { formatCurrency, formatDateTime, initials, parseDate } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 import { PhoneInput } from "@/components/phone-input";
 
 type ClientProfile = { id: string; fullName: string; phone: string; email: string | null; notes?: string | null; pointsBalance?: number };
-type ProfileResponse = { ok: true; user: { name: string; phone: string | null; notificationsAllowed: number }; profile: ClientProfile | null; consents: Array<{ kind: string; version: string }> };
-type CatalogResponse = { ok: true; user: { name: string }; profile: ClientProfile | null; services: ServiceRecord[]; branches: Branch[] };
+type ProfileResponse = { ok: true; user: { name: string; phone: string | null; notificationsAllowed: number }; profile: ClientProfile | null; archived?: boolean; consents: Array<{ kind: string; version: string }> };
+type CatalogResponse = { ok: true; user: { name: string }; profile: ClientProfile | null; archived?: boolean; services: ServiceRecord[]; branches: Branch[] };
 type AppointmentResponse = { ok: true; items: ClientAppointment[] };
 type ReviewItem = { appointmentId: string; startsAt: string; amount: number; serviceName: string | null; reviewId: string | null; rating: number | null; reviewText: string | null; status: string | null };
 type ReviewsResponse = { ok: true; items: ReviewItem[] };
@@ -65,10 +65,23 @@ function focusFirstInvalid() {
   });
 }
 
-function openSupport() {
-  const url = `https://t.me/share/url?url=${encodeURIComponent(window.location.href)}&text=${encodeURIComponent("Здравствуйте! Нужна помощь с записью в podologymk.")}`;
-  window.Telegram?.WebApp.openTelegramLink?.(url);
-  if (!window.Telegram?.WebApp.openTelegramLink) window.open(url, "_blank", "noopener,noreferrer");
+/** Archived cards keep their history but cannot book: the API answers 403, so the portal explains it up front. */
+function ClientArchivedNotice() {
+  return <section className="client-onboarding"><div className="client-welcome-icon"><ShieldCheck size={25} /></div><p className="client-eyebrow">Личный кабинет</p><h1>Карточка клиента в архиве</h1><p className="client-lead">Онлайн-запись для этой карточки приостановлена. Свяжитесь с центром, чтобы восстановить доступ — история визитов сохранена.</p><ClientSupportCard /></section>;
+}
+
+function ClientSupportCard() {
+  const [open, setOpen] = useState(false);
+  const { data, loading, error, reload } = useApi<CatalogResponse>("/api/client/catalog", undefined, { enabled: open });
+  return <>
+    <button type="button" className="client-help-card" onClick={() => setOpen(true)}><MessageCircle size={19} /><div><strong>Связаться с центром</strong><span>Телефоны и адреса филиалов</span></div><ArrowRight size={16} /></button>
+    {open ? <Modal title="Контакты центра" onClose={() => setOpen(false)}>
+      {loading && !data ? <LoadingState label="Загружаем контакты…" /> : null}
+      {error ? <ErrorState message={error} onRetry={reload} /> : null}
+      {data?.branches.map((branch) => <section className="client-preference-card" key={branch.id}><div><strong>{branch.name}</strong><span>{branch.address || "Адрес уточняется"}</span></div>{branch.phone ? <a className="button button-secondary" href={`tel:${branch.phone.replace(/[^+0-9]/g, "")}`}>{branch.phone}</a> : <span>Телефон пока не указан</span>}</section>)}
+      {data && !data.branches.length ? <EmptyState title="Контакты пока не заполнены" description="Напишите в чат бота /contact или уточните контакт центра у сотрудников." /> : null}
+    </Modal> : null}
+  </>;
 }
 
 export function ClientOnboarding({ onComplete, prefillName = "" }: { onComplete?: () => void; prefillName?: string }) {
@@ -84,6 +97,7 @@ export function ClientOnboarding({ onComplete, prefillName = "" }: { onComplete?
     const formData = new FormData(event.currentTarget);
     const body: Record<string, unknown> = Object.fromEntries(formData.entries());
     body.allowReminders = formData.get("allowReminders") === "on";
+    body.allowMarketing = formData.get("allowMarketing") === "on";
     try {
       await apiFetch("/api/client/profile", { method: "POST", body });
       dispatchCrmEvent("crm:data-changed");
@@ -109,9 +123,10 @@ export function ClientOnboarding({ onComplete, prefillName = "" }: { onComplete?
         <FormField label="Имя и фамилия" error={fieldErrors.fullName} errorId="onboarding-full-name-error"><input name="fullName" required placeholder="Как к вам обращаться" autoFocus autoComplete="name" defaultValue={prefillName} aria-invalid={Boolean(fieldErrors.fullName)} aria-describedby={fieldErrors.fullName ? "onboarding-full-name-error" : undefined} /></FormField>
         <FormField label="Телефон" error={fieldErrors.phone} errorId="onboarding-phone-error"><PhoneInput required placeholder="+7 700 123 45 67" enterKeyHint="next" aria-invalid={Boolean(fieldErrors.phone)} aria-describedby={fieldErrors.phone ? "onboarding-phone-error" : undefined} /></FormField>
         <FormField label="Email, если удобно"><input name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} placeholder="Для чека и связи" /></FormField>
-        <label className="consent-row"><input name="allowReminders" type="checkbox" defaultChecked /><span><strong>Напоминать о визитах в Telegram</strong><small>Без рекламных сообщений без отдельного согласия</small></span></label>
+        <label className="consent-row"><input name="allowReminders" type="checkbox" defaultChecked /><span><strong>Напоминать о визитах в Telegram</strong><small>Подтверждение записи и напоминание накануне</small></span></label>
+        <label className="consent-row"><input name="allowMarketing" type="checkbox" /><span><strong>Получать акции и новости центра</strong><small>Необязательно. Отключить можно в любой момент в профиле</small></span></label>
         {error && Object.keys(fieldErrors).length === 0 ? <InlineError>{error}</InlineError> : null}
-        <button className="button button-primary client-wide-button" type="submit" disabled={saving}>{saving ? "Сохраняем…" : "Продолжить"}<ArrowRight size={16} /></button>
+        <button className="button button-primary client-wide-button" type="submit" disabled={saving} aria-busy={saving || undefined}>{saving ? "Сохраняем…" : "Продолжить"}<ArrowRight size={16} /></button>
       </form>
       <p className="client-privacy"><ShieldCheck size={14} /> Данные доступны только вам и сотрудникам podologymk с нужным уровнем доступа.</p>
     </section>
@@ -122,11 +137,12 @@ export function ClientHomeView() {
   const { data, loading, error, reload } = useApi<ProfileResponse>("/api/client/profile");
   const { data: appointments } = useApi<AppointmentResponse>("/api/client/appointments");
   const { data: loyalty } = useApi<LoyaltyResponse>("/api/client/loyalty");
-  const nextAppointment = useMemo(() => (appointments?.items ?? []).filter((item) => !["cancelled", "completed", "no_show"].includes(statusKey(item.status)) && new Date(item.startsAt).getTime() > Date.now()).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0], [appointments]);
+  const nextAppointment = useMemo(() => (appointments?.items ?? []).filter((item) => !["cancelled", "completed", "no_show"].includes(statusKey(item.status)) && (parseDate(item.startsAt)?.getTime() ?? 0) > Date.now()).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0], [appointments]);
 
   if (loading && !data) return <LoadingState label="Загружаем ваш кабинет…" />;
   if (error && isAuthError(error)) return <AuthHint />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
+  if (data?.archived) return <ClientArchivedNotice />;
   if (data && !data.profile) return <ClientOnboarding prefillName={data.user.name.startsWith("Пользователь podologymk") ? "" : data.user.name} onComplete={() => void reload()} />;
   if (!data?.profile) return null;
 
@@ -139,7 +155,7 @@ export function ClientHomeView() {
 
       <div className="client-stat-grid"><Link href="/client/loyalty" className="client-stat-card"><span className="client-stat-icon client-stat-gift"><Gift size={18} /></span><span><small>Ваши бонусы</small><strong>{loyalty?.account.pointsBalance ?? 0} баллов</strong></span></Link><Link href="/client/appointments" className="client-stat-card"><span className="client-stat-icon client-stat-calendar"><CalendarDays size={18} /></span><span><small>Всего визитов</small><strong>{appointments?.items.filter((item) => statusKey(item.status) === "completed").length ?? 0}</strong></span></Link></div>
 
-      <button type="button" className="client-help-card" onClick={openSupport}><MessageCircle size={19} /><div><strong>Нужна помощь?</strong><span>Напишите администратору через Telegram</span></div><ArrowRight size={16} /></button>
+      <ClientSupportCard />
     </>
   );
 }
@@ -161,6 +177,7 @@ export function ClientBookingView() {
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [employeeOptions, setEmployeeOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [saving, setSaving] = useState(false);
+  const [waitlistPending, setWaitlistPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ id: string; changed: boolean; previousStartsAt: string | null; slot: AvailabilitySlot; service: ServiceRecord; branch: Branch } | null>(null);
   const slotsPath = branchId && serviceId && date ? `/api/client/availability?date=${date}&branchId=${branchId}&serviceId=${serviceId}&includeNext=1${employeeId ? `&employeeId=${employeeId}` : ""}` : "";
@@ -230,18 +247,25 @@ export function ClientBookingView() {
   }
 
   async function joinWaitlist() {
+    if (waitlistPending) return;
+    setWaitlistPending(true);
+    setNotice(null);
     try {
       await apiFetch("/api/client/waitlist", { method: "POST", body: { serviceId, branchId, preferredDate: date } });
-      setNotice(`Вы в листе ожидания на ${dateLabel(date)}. Если появится подходящее окно, мы сообщим в Telegram.`);
+      setNotice(`Вы в листе ожидания на ${dateLabel(date)}. Администратор увидит заявку и свяжется с вами, чтобы согласовать время.`);
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("success");
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : "Не удалось добавить в лист ожидания");
+      window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("error");
+    } finally {
+      setWaitlistPending(false);
     }
   }
 
   if (loading && !catalog) return <LoadingState label="Загружаем услуги и филиалы…" />;
   if (error && isAuthError(error)) return <AuthHint />;
   if (error && !catalog) return <ErrorState message={error} onRetry={reload} />;
+  if (catalog?.archived) return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><ClientArchivedNotice /></>;
   if (catalog && !catalog.profile) return <ClientOnboarding prefillName={catalog.user.name.startsWith("Пользователь podologymk") ? "" : catalog.user.name} onComplete={() => void reload()} />;
   if (!catalog) return null;
   if (success) return <section className="booking-success-card"><span className="booking-success-icon"><Check size={24} /></span><p className="client-eyebrow">Готово</p><h1>{success.changed ? "Запись перенесена" : "Запись подтверждена"}</h1>{success.previousStartsAt ? <p className="booking-success-previous">Было: {formatDateTime(success.previousStartsAt)}</p> : null}<p>{formatDateTime(success.slot.startsAt)} · {success.service.name}</p><span>{success.slot.employeeName} · {success.branch.name}</span><div className="booking-success-actions"><Link href={`/client/appointments#appointment-${success.id}`} className="button button-primary">Открыть запись</Link><Link href="/" className="button button-secondary">В кабинет</Link></div></section>;
@@ -251,12 +275,12 @@ export function ClientBookingView() {
       <Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link>
       <div className="client-greeting compact"><p className="client-eyebrow">{rescheduleId ? "Перенос записи" : "Новая запись"}</p><h1>{rescheduleId ? "Выберите новое время" : "Когда вам удобно?"}</h1><p>{rescheduleId ? "Старая запись останется, пока новое время не подтвердится." : "Покажем только реальные доступные окна."}</p></div>
       {catalog.services.length === 0 || catalog.branches.length === 0 ? <EmptyState title="Запись пока не настроена" description="Администратору нужно добавить филиал и услуги в каталоге podologymk." /> : <>
-        <section className="client-step-card"><div className="client-step-title"><span>1</span><div><strong>Выберите услугу</strong><small>Продолжительность и цена указаны сразу</small></div></div><div className="choice-grid">{catalog.services.map((service) => <button key={service.id} className={`choice-card ${service.id === serviceId ? "choice-card-selected" : ""}`} onClick={() => setServiceId(service.id)}><span><strong>{service.name}</strong><small>{service.category} · {service.durationMinutes} мин</small></span><b>{formatCurrency(Number(service.price || 0))}</b></button>)}</div></section>
-        <section className="client-step-card"><div className="client-step-title"><span>2</span><div><strong>Выберите филиал</strong><small>Где вам будет удобнее</small></div></div><div className="choice-grid">{catalog.branches.map((branch) => <button key={branch.id} className={`choice-card ${branch.id === branchId ? "choice-card-selected" : ""}`} onClick={() => setBranchId(branch.id)}><span><strong>{branch.name}</strong><small>{branch.address || "Адрес уточняется"}</small></span><MapPin size={17} /></button>)}</div></section>
+        <section className="client-step-card"><div className="client-step-title"><span>1</span><div><strong>Выберите услугу</strong><small>Продолжительность и цена указаны сразу</small></div></div><div className="choice-grid">{catalog.services.map((service) => <button type="button" key={service.id} className={`choice-card ${service.id === serviceId ? "choice-card-selected" : ""}`} aria-pressed={service.id === serviceId} onClick={() => setServiceId(service.id)}><span><strong>{service.name}</strong><small>{service.category} · {service.durationMinutes} мин</small></span><b>{formatCurrency(Number(service.price || 0))}</b></button>)}</div></section>
+        <section className="client-step-card"><div className="client-step-title"><span>2</span><div><strong>Выберите филиал</strong><small>Где вам будет удобнее</small></div></div><div className="choice-grid">{catalog.branches.map((branch) => <button type="button" key={branch.id} className={`choice-card ${branch.id === branchId ? "choice-card-selected" : ""}`} aria-pressed={branch.id === branchId} onClick={() => setBranchId(branch.id)}><span><strong>{branch.name}</strong><small>{branch.address || "Адрес уточняется"}</small></span><MapPin size={17} /></button>)}</div></section>
         <section className="client-step-card"><div className="client-step-title"><span>3</span><div><strong>Выберите день</strong><small>{dateLabel(date)}</small></div></div><div className="quick-date-list">{quickDates.map((quickDate, index) => <button type="button" key={quickDate} className={`quick-date ${date === quickDate ? "quick-date-selected" : ""}`} onClick={() => { setDate(quickDate); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}><strong>{index === 0 ? "Сегодня" : new Intl.DateTimeFormat("ru-RU", { weekday: "short" }).format(new Date(`${quickDate}T12:00:00`))}</strong><small>{new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(`${quickDate}T12:00:00`))}</small></button>)}</div><input className="client-date-input" type="date" value={date} min={todayValue()} onChange={(event) => setDate(event.target.value)} /></section>
-        {branchId && serviceId ? <section className="client-step-card"><div className="client-step-title"><span>4</span><div><strong>Свободные окна</strong><small>{currentService ? `${currentService.name} · ${formatCurrency(Number(currentService.price || 0))}` : "Выберите услугу"}</small></div></div>{slotEmployees.length ? <label className="specialist-select"><span>Специалист</span><select value={employeeId} onChange={(event) => { setEmployeeId(event.target.value); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}><option value="">Любой специалист — ближайшее время</option>{slotEmployees.map((employee) => <option value={employee.id} key={employee.id}>{employee.name}</option>)}</select></label> : null}{slotsLoading ? <LoadingState label="Проверяем расписание…" /> : slotsError ? <ErrorState message={slotsError} onRetry={() => void reloadSlots()} /> : slots?.items.length ? <div className="slot-grid">{slots.items.map((slot) => <button type="button" key={`${slot.employeeId}-${slot.startsAt}`} className={`slot-button ${selectedSlot?.startsAt === slot.startsAt && selectedSlot.employeeId === slot.employeeId ? "slot-button-selected" : ""}`} onClick={() => { setSelectedSlot(slot); setIdempotencyKey(""); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}><strong>{formatDateTime(slot.startsAt).split(", ").pop()}</strong><small>{slot.employeeName}</small></button>)}</div> : slots?.next ? <div className="next-slot-card"><strong>Ближайшее окно</strong><span>{formatDateTime(slots.next.startsAt)} · {slots.next.employeeName}</span><button type="button" className="button button-secondary" onClick={() => { if (!slots.next) return; setPendingSlotStart(slots.next.startsAt); setDate(dateInAlmaty(slots.next.startsAt)); setEmployeeId(slots.next.employeeId); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}>Выбрать это окно</button></div> : <EmptyState title="На ближайшие 14 дней окон нет" description="Можно выбрать другой день или встать в лист ожидания." action={<Button variant="secondary" onClick={() => void joinWaitlist()}><RefreshCw size={14} /> Лист ожидания</Button>} />}</section> : null}
+        {branchId && serviceId ? <section className="client-step-card"><div className="client-step-title"><span>4</span><div><strong>Свободные окна</strong><small>{currentService ? `${currentService.name} · ${formatCurrency(Number(currentService.price || 0))}` : "Выберите услугу"}</small></div></div>{slotEmployees.length ? <label className="specialist-select"><span>Специалист</span><select value={employeeId} onChange={(event) => { setEmployeeId(event.target.value); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}><option value="">Любой специалист — ближайшее время</option>{slotEmployees.map((employee) => <option value={employee.id} key={employee.id}>{employee.name}</option>)}</select></label> : null}{slotsLoading ? <LoadingState label="Проверяем расписание…" /> : slotsError ? <ErrorState message={slotsError} onRetry={() => void reloadSlots()} /> : slots?.items.length ? <div className="slot-grid">{slots.items.map((slot) => <button type="button" key={`${slot.employeeId}-${slot.startsAt}`} className={`slot-button ${selectedSlot?.startsAt === slot.startsAt && selectedSlot.employeeId === slot.employeeId ? "slot-button-selected" : ""}`} onClick={() => { setSelectedSlot(slot); setIdempotencyKey(""); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}><strong>{formatDateTime(slot.startsAt).split(", ").pop()}</strong><small>{slot.employeeName}</small></button>)}</div> : slots?.next ? <div className="next-slot-card"><strong>Ближайшее окно</strong><span>{formatDateTime(slots.next.startsAt)} · {slots.next.employeeName}</span><button type="button" className="button button-secondary" onClick={() => { if (!slots.next) return; setPendingSlotStart(slots.next.startsAt); setDate(dateInAlmaty(slots.next.startsAt)); setEmployeeId(slots.next.employeeId); window.Telegram?.WebApp.HapticFeedback?.selectionChanged?.(); }}>Выбрать это окно</button></div> : <EmptyState title="На ближайшие 14 дней окон нет" description="Можно выбрать другой день или встать в лист ожидания." action={<Button variant="secondary" onClick={() => void joinWaitlist()} loading={waitlistPending}><RefreshCw size={14} /> Лист ожидания</Button>} />}</section> : null}
         {selectedSlot ? <section className="booking-confirm-card"><div><span>Проверьте запись</span><strong>{formatDateTime(selectedSlot.startsAt)}</strong><small>{currentService?.name} · {formatCurrency(Number(currentService?.price || 0))} · {selectedSlot.employeeName} · {currentBranch?.name}</small></div><button type="button" className="button button-primary" onClick={() => void book()} disabled={saving}>{saving ? "Подтверждаем…" : rescheduleId ? "Перенести запись" : "Подтвердить запись"}<Check size={15} /></button></section> : null}
-        {notice ? <p className="client-notice">{notice}</p> : null}
+        {notice ? <p className="client-notice" role="status">{notice}</p> : null}
       </>}
     </>
   );
@@ -292,14 +316,14 @@ export function ClientAppointmentsView() {
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
   const items = data?.items ?? [];
   const now = Date.now();
-  const upcoming = items.filter((item) => !["cancelled", "completed", "no_show"].includes(statusKey(item.status)) && new Date(item.startsAt).getTime() > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const upcoming = items.filter((item) => !["cancelled", "completed", "no_show"].includes(statusKey(item.status)) && (parseDate(item.startsAt)?.getTime() ?? 0) > now).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   const cancelled = items.filter((item) => statusKey(item.status) === "cancelled").sort((a, b) => b.startsAt.localeCompare(a.startsAt));
   const past = items.filter((item) => statusKey(item.status) !== "cancelled" && !upcoming.some((candidate) => candidate.id === item.id)).sort((a, b) => b.startsAt.localeCompare(a.startsAt));
 
   function renderAppointment(item: ClientAppointment) {
     const status = statusKey(item.status);
     const isCancelTarget = cancelTarget?.id === item.id;
-    return <article className="client-appointment-card" id={`appointment-${item.id}`} key={item.id}><div className="client-appointment-top"><div><span className="client-appointment-date">{formatDateTime(item.startsAt)}</span><strong>{item.serviceName ?? "Приём в podologymk"}</strong></div><StatusPill status={status} /></div><div className="client-appointment-meta"><span><UserRound size={14} /> {item.employeeName ?? "Специалист"}</span><span><MapPin size={14} /> {item.branchName ?? "Филиал"}</span><Amount value={Number(item.amount || 0)} /></div>{item.checkInToken && ["scheduled", "confirmed"].includes(status) ? <div className="client-checkin-code"><span>Код для администратора</span><strong>{item.checkInToken}</strong></div> : null}{isCancelTarget ? <div className="client-cancel-confirm"><strong>Отменить эту запись?</strong><span>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</span><div><button type="button" className="button button-ghost" onClick={() => setCancelTarget(null)} disabled={cancelling}>Оставить запись</button><button type="button" className="button button-danger" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Отменяем…" : "Да, отменить"}</button></div></div> : <div className="client-appointment-actions">{item.canCancel ? <><Link href={`/client/book?reschedule=${item.id}`} className="button button-secondary">Перенести</Link><button type="button" className="button button-ghost danger-text" onClick={() => { setNotice(null); setCancelTarget(item); }}>Отменить</button></> : null}{status === "completed" && !item.reviewId ? <Link href={`/client/reviews?appointment=${item.id}`} className="button button-ghost"><Star size={14} /> Оставить отзыв</Link> : null}{status === "completed" ? <Link href={bookAgainHref(item)} className="button button-ghost"><RefreshCw size={14} /> Повторить запись</Link> : null}</div>}</article>;
+    return <article className="client-appointment-card" id={`appointment-${item.id}`} key={item.id}><div className="client-appointment-top"><div><span className="client-appointment-date">{formatDateTime(item.startsAt)}</span><strong>{item.serviceName ?? "Приём в podologymk"}</strong></div><StatusPill status={status} /></div><div className="client-appointment-meta"><span><UserRound size={14} /> {item.employeeName ?? "Специалист"}</span><span><MapPin size={14} /> {item.branchName ?? "Филиал"}</span><Amount value={Number(item.amount || 0)} /></div>{item.checkInToken && ["scheduled", "confirmed"].includes(status) ? <div className="client-checkin-code"><span>Код для администратора</span><strong>{item.checkInToken}</strong></div> : null}{isCancelTarget ? <div className="client-cancel-confirm"><strong>Отменить эту запись?</strong><span>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</span><div><button type="button" className="button button-ghost" onClick={() => setCancelTarget(null)} disabled={cancelling}>Оставить запись</button><button type="button" className="button button-danger" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Отменяем…" : "Да, отменить"}</button></div></div> : <div className="client-appointment-actions">{["scheduled", "confirmed"].includes(status) ? <a href={`/api/client/calendar?appointmentId=${encodeURIComponent(item.id)}`} className="button button-ghost" download="podologymk-visit.ics">В календарь</a> : null}{item.canCancel ? <><Link href={`/client/book?reschedule=${item.id}`} className="button button-secondary">Перенести</Link><button type="button" className="button button-ghost danger-text" onClick={() => { setNotice(null); setCancelTarget(item); }}>Отменить</button></> : null}{status === "completed" && !item.reviewId ? <Link href={`/client/reviews?appointment=${item.id}`} className="button button-ghost"><Star size={14} /> Оставить отзыв</Link> : null}{status === "completed" ? <Link href={bookAgainHref(item)} className="button button-ghost"><RefreshCw size={14} /> Повторить запись</Link> : null}</div>}</article>;
   }
 
   function renderGroup(title: string, group: ClientAppointment[]) {
@@ -323,10 +347,15 @@ export function ClientProfileView() {
   const { data, loading, error, reload } = useApi<ProfileResponse>("/api/client/profile");
   const [saving, setSaving] = useState(false);
   const [allowReminders, setAllowReminders] = useState(false);
+  const [allowMarketing, setAllowMarketing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState(false);
-  useEffect(() => { if (data) setAllowReminders(Boolean(data.user.notificationsAllowed || data.consents.some((consent) => consent.kind === "REMINDERS"))); }, [data]);
+  useEffect(() => {
+    if (!data) return;
+    setAllowReminders(Boolean(data.user.notificationsAllowed || data.consents.some((consent) => consent.kind === "REMINDERS")));
+    setAllowMarketing(data.consents.some((consent) => consent.kind === "MARKETING"));
+  }, [data]);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -334,6 +363,7 @@ export function ClientProfileView() {
     setFieldErrors({});
     const body: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget).entries());
     body.allowReminders = allowReminders;
+    body.allowMarketing = allowMarketing;
     try { await apiFetch("/api/client/profile", { method: "POST", body }); window.Telegram?.WebApp.hideKeyboard?.(); window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("success"); dispatchCrmEvent("crm:data-changed"); setNotice("Профиль сохранён"); setEditing(false); await reload(); } catch (cause) { if (cause instanceof ApiError) { setNotice(cause.message); setFieldErrors(cause.fieldErrors); if (Object.keys(cause.fieldErrors).length) focusFirstInvalid(); window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("error"); } else setNotice(cause instanceof Error ? cause.message : "Не удалось сохранить профиль"); } finally { setSaving(false); }
   }
   function requestReminders() {
@@ -342,7 +372,7 @@ export function ClientProfileView() {
       setAllowReminders(allowed);
       setNotice(allowed ? "Напоминания включены" : "Разрешение не предоставлено");
       if (data?.profile) {
-        void apiFetch("/api/client/profile", { method: "POST", body: { fullName: data.profile.fullName, phone: data.profile.phone, email: data.profile.email ?? "", allowReminders: allowed } })
+        void apiFetch("/api/client/profile", { method: "POST", body: { fullName: data.profile.fullName, phone: data.profile.phone, email: data.profile.email ?? "", allowReminders: allowed, allowMarketing } })
           .then(() => reload())
           .catch(() => setNotice("Разрешение получено, сохраните профиль ещё раз"));
       }
@@ -352,8 +382,9 @@ export function ClientProfileView() {
   if (loading && !data) return <LoadingState label="Загружаем профиль…" />;
   if (error && isAuthError(error)) return <AuthHint />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
+  if (data?.archived) return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><ClientArchivedNotice /></>;
   if (!data?.profile) return <ClientOnboarding prefillName={data?.user.name?.startsWith("Пользователь podologymk") ? "" : data?.user.name} onComplete={() => void reload()} />;
-  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><section className="client-account-card"><div className="client-account-heading"><span className="client-account-avatar">{initials(data.profile.fullName)}</span><div><p className="client-eyebrow">Личный кабинет</p><h1>{data.profile.fullName}</h1><span>{data.profile.phone}</span></div><button type="button" className="button button-secondary" onClick={() => { setNotice(null); setFieldErrors({}); setEditing(true); }}>Изменить</button></div></section>{editing ? <form className="client-profile-form" onSubmit={save}><div className="client-form-section-title">Личные данные</div><FormField label="Имя и фамилия" error={fieldErrors.fullName} errorId="profile-full-name-error"><input name="fullName" required autoComplete="name" defaultValue={data.profile.fullName} aria-invalid={Boolean(fieldErrors.fullName)} aria-describedby={fieldErrors.fullName ? "profile-full-name-error" : undefined} /></FormField><FormField label="Телефон" error={fieldErrors.phone} errorId="profile-phone-error"><PhoneInput required defaultValue={data.profile.phone} enterKeyHint="next" aria-invalid={Boolean(fieldErrors.phone)} aria-describedby={fieldErrors.phone ? "profile-phone-error" : undefined} /></FormField><FormField label="Email"><input name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} defaultValue={data.profile.email ?? ""} /></FormField><label className="consent-row"><input name="allowReminders" type="checkbox" checked={allowReminders} onChange={(event) => setAllowReminders(event.target.checked)} /><span><strong>Напоминать о записи в Telegram</strong><small>Без рекламных сообщений</small></span></label><div className="client-profile-actions"><button className="button button-primary" type="submit" disabled={saving}>{saving ? "Сохраняем…" : "Сохранить"}</button><Button variant="secondary" onClick={() => setEditing(false)}>Отмена</Button></div>{notice ? <p className="client-notice">{notice}</p> : null}</form> : <><section className="client-profile-summary"><p className="client-form-section-title">Личные данные</p><div><span>Имя</span><strong>{data.profile.fullName}</strong></div><div><span>Телефон</span><strong>{data.profile.phone}</strong></div><div><span>Email</span><strong>{data.profile.email || "Не указан"}</strong></div></section><section className="client-preference-card"><div><strong>Напоминания</strong><span>{allowReminders ? "Напоминать о записи в Telegram" : "Напоминания выключены"}</span></div>{allowReminders ? <span className="preference-status">Включены</span> : <Button variant="secondary" onClick={requestReminders}>Включить</Button>}</section><button type="button" className="client-help-card" onClick={openSupport}><MessageCircle size={19} /><div><strong>Помощь</strong><span>Написать администратору через Telegram</span></div><ArrowRight size={16} /></button></>}{notice && !editing ? <p className="client-notice">{notice}</p> : null}<section className="client-privacy-card"><ShieldCheck size={18} /><div><strong>Ваши данные защищены</strong><span>Клинические заметки и внутренние записи специалиста не показываются в клиентском кабинете.</span></div></section></>;
+  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><section className="client-account-card"><div className="client-account-heading"><span className="client-account-avatar">{initials(data.profile.fullName)}</span><div><p className="client-eyebrow">Личный кабинет</p><h1>{data.profile.fullName}</h1><span>{data.profile.phone}</span></div><button type="button" className="button button-secondary" onClick={() => { setNotice(null); setFieldErrors({}); setEditing(true); }}>Изменить</button></div></section>{editing ? <form className="client-profile-form" onSubmit={save}><div className="client-form-section-title">Личные данные</div><FormField label="Имя и фамилия" error={fieldErrors.fullName} errorId="profile-full-name-error"><input name="fullName" required autoComplete="name" defaultValue={data.profile.fullName} aria-invalid={Boolean(fieldErrors.fullName)} aria-describedby={fieldErrors.fullName ? "profile-full-name-error" : undefined} /></FormField><FormField label="Телефон" error={fieldErrors.phone} errorId="profile-phone-error"><PhoneInput required defaultValue={data.profile.phone} enterKeyHint="next" aria-invalid={Boolean(fieldErrors.phone)} aria-describedby={fieldErrors.phone ? "profile-phone-error" : undefined} /></FormField><FormField label="Email"><input name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} defaultValue={data.profile.email ?? ""} /></FormField><label className="consent-row"><input name="allowReminders" type="checkbox" checked={allowReminders} onChange={(event) => setAllowReminders(event.target.checked)} /><span><strong>Напоминать о записи в Telegram</strong><small>Подтверждение записи и напоминание накануне</small></span></label><label className="consent-row"><input name="allowMarketing" type="checkbox" checked={allowMarketing} onChange={(event) => setAllowMarketing(event.target.checked)} /><span><strong>Получать акции и новости центра</strong><small>Необязательно. Можно отключить в любой момент</small></span></label><div className="client-profile-actions"><button className="button button-primary" type="submit" disabled={saving} aria-busy={saving || undefined}>{saving ? "Сохраняем…" : "Сохранить"}</button><Button variant="secondary" onClick={() => setEditing(false)} disabled={saving}>Отмена</Button></div>{notice ? <p className="client-notice" role="alert">{notice}</p> : null}</form> : <><section className="client-profile-summary"><p className="client-form-section-title">Личные данные</p><div><span>Имя</span><strong>{data.profile.fullName}</strong></div><div><span>Телефон</span><strong>{data.profile.phone}</strong></div><div><span>Email</span><strong>{data.profile.email || "Не указан"}</strong></div></section><section className="client-preference-card"><div><strong>Напоминания</strong><span>{allowReminders ? "Напоминать о записи в Telegram" : "Напоминания выключены"}</span></div>{allowReminders ? <span className="preference-status">Включены</span> : <Button variant="secondary" onClick={requestReminders}>Включить</Button>}</section><section className="client-preference-card"><div><strong>Акции и новости</strong><span>{allowMarketing ? "Вы получаете рассылки центра" : "Рассылки выключены"}</span></div><Button variant="secondary" onClick={() => { setNotice(null); setFieldErrors({}); setEditing(true); }}>{allowMarketing ? "Изменить" : "Включить"}</Button></section><ClientSupportCard /></>}{notice && !editing ? <p className="client-notice" role="status">{notice}</p> : null}<section className="client-privacy-card"><ShieldCheck size={18} /><div><strong>Ваши данные защищены</strong><span>Клинические заметки и внутренние записи специалиста не показываются в клиентском кабинете.</span></div></section></>;
 }
 
 export function ClientReviewsView() {
@@ -368,6 +399,7 @@ export function ClientReviewsView() {
   const available = (data?.items ?? []).filter((item) => !item.reviewId);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving) return;
     setSaving(true);
     setNotice(null);
     try { await apiFetch("/api/client/reviews", { method: "POST", body: { appointmentId, rating, reviewText: text } }); setNotice("Спасибо за отзыв!"); setText(""); dispatchCrmEvent("crm:data-changed"); await reload(); } catch (cause) { setNotice(cause instanceof Error ? cause.message : "Не удалось сохранить отзыв"); } finally { setSaving(false); }
@@ -375,5 +407,5 @@ export function ClientReviewsView() {
   if (loading && !data) return <LoadingState label="Загружаем отзывы…" />;
   if (error && isAuthError(error)) return <AuthHint />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
-  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><div className="client-greeting compact"><p className="client-eyebrow">Обратная связь</p><h1>Ваше мнение важно</h1><p>Оцените визит — это помогает нам становиться лучше.</p></div>{available.length ? <form className="review-form" onSubmit={submit}><FormField label="Приём"><select value={appointmentId} onChange={(event) => setAppointmentId(event.target.value)} required><option value="">Выберите завершённый визит</option>{available.map((item) => <option key={item.appointmentId} value={item.appointmentId}>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</option>)}</select></FormField><div className="rating-picker"><span>Оценка</span><div>{[1, 2, 3, 4, 5].map((value) => <button key={value} type="button" className={value <= rating ? "rating-star rating-star-active" : "rating-star"} onClick={() => setRating(value)} aria-label={`${value} из 5`}><Star size={25} fill="currentColor" /></button>)}</div></div><FormField label="Комментарий"><textarea rows={4} value={text} onChange={(event) => setText(event.target.value)} placeholder="Что понравилось или что можно улучшить?" /></FormField><button className="button button-primary client-wide-button" type="submit" disabled={saving || !appointmentId}>{saving ? "Отправляем…" : "Оставить отзыв"}</button>{notice ? <p className="client-notice">{notice}</p> : null}</form> : <EmptyState title="Все визиты уже оценены" description="Спасибо, что помогаете podologymk становиться лучше." />}{(data?.items ?? []).filter((item) => item.reviewId).length ? <section className="client-review-history"><h2>Ваши отзывы</h2>{(data?.items ?? []).filter((item) => item.reviewId).map((item) => <div key={item.reviewId} className="review-history-row"><div>{Array.from({ length: item.rating ?? 0 }).map((_, index) => <Star key={index} size={14} fill="currentColor" />)}</div><p>{item.reviewText || "Без комментария"}</p><small>{formatDateTime(item.startsAt)}</small></div>)}</section> : null}</>;
+  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><div className="client-greeting compact"><p className="client-eyebrow">Обратная связь</p><h1>Ваше мнение важно</h1><p>Оцените визит — это помогает нам становиться лучше.</p></div>{available.length ? <form className="review-form" onSubmit={submit}><FormField label="Приём"><select value={appointmentId} onChange={(event) => setAppointmentId(event.target.value)} required><option value="">Выберите завершённый визит</option>{available.map((item) => <option key={item.appointmentId} value={item.appointmentId}>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</option>)}</select></FormField><div className="rating-picker"><span id="rating-label">Оценка</span><div role="radiogroup" aria-labelledby="rating-label">{[1, 2, 3, 4, 5].map((value) => <button key={value} type="button" role="radio" aria-checked={rating === value} className={value <= rating ? "rating-star rating-star-active" : "rating-star"} onClick={() => setRating(value)} aria-label={`${value} из 5`}><Star size={25} fill="currentColor" aria-hidden="true" /></button>)}</div></div><FormField label="Комментарий"><textarea rows={4} value={text} onChange={(event) => setText(event.target.value)} placeholder="Что понравилось или что можно улучшить?" /></FormField><button className="button button-primary client-wide-button" type="submit" disabled={saving || !appointmentId} aria-busy={saving || undefined}>{saving ? "Отправляем…" : "Оставить отзыв"}</button>{notice ? <p className="client-notice" role="status">{notice}</p> : null}</form> : <EmptyState title="Все визиты уже оценены" description="Спасибо, что помогаете podologymk становиться лучше." />}{(data?.items ?? []).filter((item) => item.reviewId).length ? <section className="client-review-history"><h2>Ваши отзывы</h2>{(data?.items ?? []).filter((item) => item.reviewId).map((item) => <div key={item.reviewId} className="review-history-row"><div>{Array.from({ length: item.rating ?? 0 }).map((_, index) => <Star key={index} size={14} fill="currentColor" />)}</div><p>{item.reviewText || "Без комментария"}</p><small>{formatDateTime(item.startsAt)}</small></div>)}</section> : null}</>;
 }

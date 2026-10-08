@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../_lib/auth";
 import type { CrmEnv } from "../../_lib/env";
-import { badRequest, conflict, dateValue, json, newId, readJson, stringValue } from "../../_lib/http";
+import { badRequest, conflict, json, newId, notFound, readJson, stringValue } from "../../_lib/http";
+import { organizationTimezone, zonedDateValue } from "../../_lib/dates";
 import { nonNegativeNumber } from "../../_lib/validation";
 
 export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => {
@@ -10,9 +11,10 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const body = await readJson(request);
   const paymentId = stringValue(body, "paymentId");
   const amount = nonNegativeNumber(body.amount, "Сумма возврата");
-  const reason = stringValue(body, "reason");
+  const reason = stringValue(body, "reason").slice(0, 500);
   const idempotencyKey = stringValue(body, "idempotencyKey") || newId();
   if (!paymentId || amount === null || amount <= 0 || !reason) return badRequest("Укажите платёж, положительную сумму и причину возврата");
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) return badRequest("Сумма должна содержать не более двух знаков после запятой");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
   const requestHash = [paymentId, amount.toFixed(2), reason].join("|");
   const previousAdjustment = await env.DB.prepare("SELECT adjustment_id AS adjustmentId, user_id AS userId, request_hash AS requestHash FROM refund_idempotency_keys WHERE idempotency_key = ? LIMIT 1").bind(idempotencyKey).first<{ adjustmentId: string; userId: string; requestHash: string }>();
@@ -20,14 +22,15 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (previousAdjustment && previousAdjustment.requestHash !== requestHash) return conflict("Этот ключ уже использован для другого возврата");
   if (previousAdjustment) return json({ ok: true, id: previousAdjustment.adjustmentId, replayed: true });
   const payment = await env.DB.prepare("SELECT p.id, p.amount, p.appointment_id AS appointmentId, a.branch_id AS branchId, p.payment_status AS status FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE p.id = ?").bind(paymentId).first<{ id: string; amount: number; appointmentId: string; branchId: string; status: string }>();
-  if (!payment || payment.status !== "POSTED") return badRequest("Платёж не найден или уже закрыт");
+  if (!payment) return notFound("Платёж не найден");
+  if (payment.status !== "POSTED") return badRequest("Платёж уже закрыт");
   const refunded = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS value FROM payment_adjustments WHERE payment_id = ?").bind(paymentId).first<{ value: number }>();
   const available = Number(payment.amount ?? 0) - Number(refunded?.value ?? 0);
   if (amount > available + 0.005) return conflict(`Нельзя вернуть больше доступной суммы: ${Math.max(0, available).toFixed(2)} ₸`);
-  const occurredAt = dateValue(body, "occurredAt") || new Date().toISOString();
+  const occurredAt = zonedDateValue(body, "occurredAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   const adjustmentId = newId();
   try {
-    const results = await env.DB.batch([
+    await env.DB.batch([
       env.DB.prepare(`
         INSERT INTO payment_adjustments (id, payment_id, appointment_id, kind, amount, reason, occurred_at, created_by)
         SELECT ?, p.id, p.appointment_id, 'REFUND', ?, ?, ?, ?
@@ -45,7 +48,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
         SELECT ?, ?, 'payment', ?, 'REFUND', ?, ? WHERE EXISTS (SELECT 1 FROM payment_adjustments WHERE id = ?)`)
         .bind(newId(), user.id, paymentId, JSON.stringify({ amount: payment.amount, refunded: refunded?.value ?? 0 }), JSON.stringify({ refundAmount: amount, reason, adjustmentId }), adjustmentId),
     ]);
-    if (Number(results[0]?.meta.changes ?? 0) !== 1) return conflict("Возврат превышает актуальный остаток платежа");
+    if (!await env.DB.prepare("SELECT id FROM payment_adjustments WHERE id = ?").bind(adjustmentId).first()) return conflict("Возврат превышает актуальный остаток платежа");
   } catch (error) {
     if (/unique|constraint/i.test(error instanceof Error ? error.message : "")) {
       const replay = await env.DB.prepare("SELECT adjustment_id AS adjustmentId, request_hash AS requestHash FROM refund_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ adjustmentId: string; requestHash: string }>();

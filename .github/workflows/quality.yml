@@ -18,10 +18,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Dependency security audit
+        run: npm audit --omit=dev --audit-level=high
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
@@ -30,3 +32,9 @@ jobs:
         run: npm test
       - name: Pages build
         run: npm run build:pages
+      - name: Install browser for UI checks
+        run: npx --yes --package=playwright playwright install --with-deps chromium
+      - name: Browser UI checks
+        run: |
+          node scripts/serve-export.mjs &
+          npx --yes --package=playwright -c 'PLAYWRIGHT_MODULE="$(dirname "$(command -v playwright)")/../playwright" npm run qa:ui'

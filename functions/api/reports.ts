@@ -1,38 +1,33 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
+import { inRange, organizationTimezone, periodRange } from "../_lib/dates";
 import type { CrmEnv } from "../_lib/env";
 import { json } from "../_lib/http";
 import { calculateAvailableWorkingMinutes } from "../_lib/working-time";
-
-function period(request: Request) {
-  const params = new URL(request.url).searchParams;
-  const now = new Date();
-  const start = params.get("from") ? new Date(params.get("from") as string) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const end = params.get("to") ? new Date(params.get("to") as string) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return { start: Number.isNaN(start.getTime()) ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)) : start, end: Number.isNaN(end.getTime()) ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)) : end };
-}
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "reports.read")) return forbidden();
   const params = new URL(request.url).searchParams;
-  const { start, end } = period(request);
-  const from = start.toISOString();
-  const to = end.toISOString();
+  const timezone = await organizationTimezone(env.DB);
+  const { from, to } = periodRange(params.get("from"), params.get("to"), timezone);
+  const start = new Date(from);
+  const end = new Date(to);
   const branchId = params.get("branchId")?.trim() ?? "";
   const employeeId = params.get("employeeId")?.trim() ?? "";
   const serviceId = params.get("serviceId")?.trim() ?? "";
   const category = params.get("category")?.trim() ?? "";
-  const appointmentFilters = ["a.starts_at >= ?", "a.starts_at < ?"];
-  const appointmentBindings: string[] = [from, to];
-  const ledgerFilters = ["x.occurred_at >= ?", "x.occurred_at < ?", "x.status = 'POSTED'"];
-  const ledgerBindings: string[] = [from, to];
-  if (branchId) { appointmentFilters.push("a.branch_id = ?"); appointmentBindings.push(branchId); ledgerFilters.push("x.branch_id = ?"); ledgerBindings.push(branchId); }
-  if (employeeId) { appointmentFilters.push("a.employee_id = ?"); appointmentBindings.push(employeeId); }
-  if (serviceId) { appointmentFilters.push("EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)"); appointmentBindings.push(serviceId); }
-  if (category) { appointmentFilters.push("EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)"); appointmentBindings.push(category); }
-  const appointmentWhere = appointmentFilters.join(" AND ");
-  const scopedBindings = [branchId, employeeId, serviceId, category].filter(Boolean);
+  const scopeFilters: string[] = [];
+  const scopedBindings: string[] = [];
+  if (branchId) { scopeFilters.push("a.branch_id = ?"); scopedBindings.push(branchId); }
+  if (employeeId) { scopeFilters.push("a.employee_id = ?"); scopedBindings.push(employeeId); }
+  if (serviceId) { scopeFilters.push("EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)"); scopedBindings.push(serviceId); }
+  if (category) { scopeFilters.push("EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)"); scopedBindings.push(category); }
+  const scopeWhere = scopeFilters.length ? ` AND ${scopeFilters.join(" AND ")}` : "";
+  const appointmentWhere = `${inRange("a.starts_at")}${scopeWhere}`;
+  const appointmentBindings = [from, to, ...scopedBindings];
+  const ledgerWhere = `${inRange("x.occurred_at")} AND x.status = 'POSTED'${branchId ? " AND x.branch_id = ?" : ""}`;
+  const ledgerBindings = [from, to, ...(branchId ? [branchId] : [])];
   const employeeJoinFilters = [
     ...(branchId ? ["a.branch_id = ?"] : []),
     ...(serviceId ? ["EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)"] : []),
@@ -43,23 +38,23 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const employeeWhereBindings = employeeId ? [employeeId] : [];
   const [appointmentCounts, grossRevenue, refunds, expenses, payroll, clientCounts, employeeRevenueAppointments, employeeRevenue, employeeRevenueRefunds, serviceRevenueLines, occupied, schedules, timeOff, settings] = await Promise.all([
     env.DB.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN a.status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed, SUM(CASE WHEN a.status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled, SUM(CASE WHEN a.status = 'NO_SHOW' THEN 1 ELSE 0 END) AS noShow, COUNT(DISTINCT CASE WHEN a.status = 'COMPLETED' THEN a.client_id END) AS uniqueClients FROM appointments a WHERE ${appointmentWhere}`).bind(...appointmentBindings).first<Record<string, number>>(),
-    env.DB.prepare(`SELECT COALESCE(SUM(p.amount), 0) AS value FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND p.paid_at >= ? AND p.paid_at < ?${branchId ? " AND a.branch_id = ?" : ""}${employeeId ? " AND a.employee_id = ?" : ""}${serviceId ? " AND EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)" : ""}${category ? " AND EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)" : ""}`).bind(from, to, ...[branchId, employeeId, serviceId, category].filter(Boolean)).first<{ value: number }>(),
-    env.DB.prepare(`SELECT COALESCE(SUM(pa.amount), 0) AS value FROM payment_adjustments pa INNER JOIN payments p ON p.id = pa.payment_id INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND pa.occurred_at >= ? AND pa.occurred_at < ?${branchId ? " AND a.branch_id = ?" : ""}${employeeId ? " AND a.employee_id = ?" : ""}${serviceId ? " AND EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)" : ""}${category ? " AND EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)" : ""}`).bind(from, to, ...scopedBindings).first<{ value: number }>(),
-    env.DB.prepare(`SELECT COALESCE(SUM(x.amount), 0) AS value FROM financial_transactions x WHERE ${ledgerFilters.join(" AND ")} AND x.direction = 'EXPENSE' AND x.kind <> 'SALARY'`).bind(...ledgerBindings).first<{ value: number }>(),
-    env.DB.prepare("SELECT COALESCE(SUM(l.total_amount), 0) AS value FROM payroll_lines l INNER JOIN payroll_periods p ON p.id = l.period_id WHERE p.status IN ('CALCULATED', 'CLOSED') AND p.period_start >= ? AND p.period_start < ?").bind(from, to).first<{ value: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS totalClients, SUM(CASE WHEN visitCount > 1 THEN 1 ELSE 0 END) AS returningClients, SUM(CASE WHEN createdAt >= ? AND createdAt < ? THEN 1 ELSE 0 END) AS newClients FROM (SELECT c.id, c.created_at AS createdAt, COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) AS visitCount FROM clients c LEFT JOIN appointments a ON a.client_id = c.id AND a.starts_at >= ? AND a.starts_at < ? GROUP BY c.id)`).bind(from, to, from, to).first<Record<string, number>>(),
-    env.DB.prepare(`SELECT e.id AS employeeId, e.full_name AS employeeName, COUNT(DISTINCT a.id) AS appointments FROM employees e LEFT JOIN appointments a ON a.employee_id = e.id AND a.status = 'COMPLETED' AND a.starts_at >= ? AND a.starts_at < ?${employeeJoinFilters.length ? ` AND ${employeeJoinFilters.join(" AND ")}` : ""}${employeeWhere} GROUP BY e.id ORDER BY appointments DESC`).bind(from, to, ...employeeJoinBindings, ...employeeWhereBindings).all<{ employeeId: string; employeeName: string; appointments: number }>(),
-    env.DB.prepare(`SELECT a.employee_id AS employeeId, COALESCE(SUM(p.amount), 0) AS value FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND p.paid_at >= ? AND p.paid_at < ?${employeeId ? " AND a.employee_id = ?" : ""}${branchId ? " AND a.branch_id = ?" : ""}${serviceId ? " AND EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)" : ""}${category ? " AND EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)" : ""} GROUP BY a.employee_id`).bind(from, to, ...[employeeId, branchId, serviceId, category].filter(Boolean)).all<{ employeeId: string; value: number }>(),
-    env.DB.prepare(`SELECT a.employee_id AS employeeId, COALESCE(SUM(pa.amount), 0) AS value FROM payment_adjustments pa INNER JOIN payments p ON p.id = pa.payment_id INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND pa.occurred_at >= ? AND pa.occurred_at < ?${employeeId ? " AND a.employee_id = ?" : ""}${branchId ? " AND a.branch_id = ?" : ""}${serviceId ? " AND EXISTS (SELECT 1 FROM appointment_services sf WHERE sf.appointment_id = a.id AND sf.service_id = ?)" : ""}${category ? " AND EXISTS (SELECT 1 FROM appointment_services sc INNER JOIN services svc ON svc.id = sc.service_id WHERE sc.appointment_id = a.id AND svc.category = ?)" : ""} GROUP BY a.employee_id`).bind(from, to, ...[employeeId, branchId, serviceId, category].filter(Boolean)).all<{ employeeId: string; value: number }>(),
+    env.DB.prepare(`SELECT COALESCE(SUM(p.amount), 0) AS value FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND ${inRange("p.paid_at")}${scopeWhere}`).bind(from, to, ...scopedBindings).first<{ value: number }>(),
+    env.DB.prepare(`SELECT COALESCE(SUM(pa.amount), 0) AS value FROM payment_adjustments pa INNER JOIN payments p ON p.id = pa.payment_id INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND ${inRange("pa.occurred_at")}${scopeWhere}`).bind(from, to, ...scopedBindings).first<{ value: number }>(),
+    env.DB.prepare(`SELECT COALESCE(SUM(x.amount), 0) AS value FROM financial_transactions x WHERE ${ledgerWhere} AND x.direction = 'EXPENSE' AND x.kind <> 'SALARY'`).bind(...ledgerBindings).first<{ value: number }>(),
+    env.DB.prepare(`SELECT COALESCE(SUM(l.total_amount), 0) AS value FROM payroll_lines l INNER JOIN payroll_periods p ON p.id = l.period_id WHERE p.status IN ('CALCULATED', 'CLOSED') AND ${inRange("p.period_start")}${employeeId ? " AND l.employee_id = ?" : ""}`).bind(from, to, ...(employeeId ? [employeeId] : [])).first<{ value: number }>(),
+    env.DB.prepare(`SELECT COUNT(*) AS totalClients, SUM(CASE WHEN visitCount > 1 THEN 1 ELSE 0 END) AS returningClients, SUM(CASE WHEN julianday(createdAt) >= julianday(?) AND julianday(createdAt) < julianday(?) THEN 1 ELSE 0 END) AS newClients FROM (SELECT c.id, c.created_at AS createdAt, COUNT(CASE WHEN a.status = 'COMPLETED' THEN 1 END) AS visitCount FROM clients c LEFT JOIN appointments a ON a.client_id = c.id AND ${inRange("a.starts_at")} GROUP BY c.id)`).bind(from, to, from, to).first<Record<string, number>>(),
+    env.DB.prepare(`SELECT e.id AS employeeId, e.full_name AS employeeName, COUNT(DISTINCT a.id) AS appointments FROM employees e LEFT JOIN appointments a ON a.employee_id = e.id AND a.status = 'COMPLETED' AND ${inRange("a.starts_at")}${employeeJoinFilters.length ? ` AND ${employeeJoinFilters.join(" AND ")}` : ""}${employeeWhere} GROUP BY e.id ORDER BY appointments DESC`).bind(from, to, ...employeeJoinBindings, ...employeeWhereBindings).all<{ employeeId: string; employeeName: string; appointments: number }>(),
+    env.DB.prepare(`SELECT a.employee_id AS employeeId, COALESCE(SUM(p.amount), 0) AS value FROM payments p INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND p.payment_status = 'POSTED' AND ${inRange("p.paid_at")}${scopeWhere} GROUP BY a.employee_id`).bind(from, to, ...scopedBindings).all<{ employeeId: string; value: number }>(),
+    env.DB.prepare(`SELECT a.employee_id AS employeeId, COALESCE(SUM(pa.amount), 0) AS value FROM payment_adjustments pa INNER JOIN payments p ON p.id = pa.payment_id INNER JOIN appointments a ON a.id = p.appointment_id WHERE a.status = 'COMPLETED' AND ${inRange("pa.occurred_at")}${scopeWhere} GROUP BY a.employee_id`).bind(from, to, ...scopedBindings).all<{ employeeId: string; value: number }>(),
     env.DB.prepare(`SELECT s.id AS serviceId, s.name AS serviceName, s.category, a.id AS appointmentId, a.total_amount AS appointmentAmount, aps.price, aps.quantity,
-      COALESCE((SELECT SUM(p2.amount) FROM payments p2 WHERE p2.appointment_id = a.id AND p2.payment_status = 'POSTED' AND p2.paid_at >= ? AND p2.paid_at < ?), 0) AS grossPaid,
-      COALESCE((SELECT SUM(pa2.amount) FROM payment_adjustments pa2 INNER JOIN payments p3 ON p3.id = pa2.payment_id WHERE p3.appointment_id = a.id AND pa2.occurred_at >= ? AND pa2.occurred_at < ?), 0) AS refunded
+      COALESCE((SELECT SUM(p2.amount) FROM payments p2 WHERE p2.appointment_id = a.id AND p2.payment_status = 'POSTED' AND ${inRange("p2.paid_at")}), 0) AS grossPaid,
+      COALESCE((SELECT SUM(pa2.amount) FROM payment_adjustments pa2 INNER JOIN payments p3 ON p3.id = pa2.payment_id WHERE p3.appointment_id = a.id AND ${inRange("pa2.occurred_at")}), 0) AS refunded
       FROM appointment_services aps INNER JOIN services s ON s.id = aps.service_id INNER JOIN appointments a ON a.id = aps.appointment_id
-      WHERE a.status = 'COMPLETED' AND a.starts_at >= ? AND a.starts_at < ?${branchId ? " AND a.branch_id = ?" : ""}${employeeId ? " AND a.employee_id = ?" : ""}${serviceId ? " AND aps.service_id = ?" : ""}${category ? " AND s.category = ?" : ""}`).bind(from, to, from, to, from, to, ...scopedBindings).all<{ serviceId: string; serviceName: string; category: string; appointmentId: string; appointmentAmount: number; price: number; quantity: number; grossPaid: number; refunded: number }>(),
+      WHERE a.status = 'COMPLETED' AND ${appointmentWhere}`).bind(from, to, from, to, ...appointmentBindings).all<{ serviceId: string; serviceName: string; category: string; appointmentId: string; appointmentAmount: number; price: number; quantity: number; grossPaid: number; refunded: number }>(),
     env.DB.prepare(`SELECT COALESCE(SUM((julianday(a.ends_at) - julianday(a.starts_at)) * 1440), 0) AS value FROM appointments a WHERE a.status NOT IN ('CANCELLED', 'NO_SHOW') AND a.ends_at IS NOT NULL AND ${appointmentWhere}`).bind(...appointmentBindings).first<{ value: number }>(),
     env.DB.prepare("SELECT employee_id AS employeeId, day_of_week AS dayOfWeek, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE is_active = 1").all<{ employeeId: string; dayOfWeek: number; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
-    env.DB.prepare("SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE ends_at >= ? AND starts_at < ?").bind(from, to).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
-    env.DB.prepare("SELECT timezone FROM organization_settings WHERE id = 1").first<{ timezone: string }>(),
+    env.DB.prepare("SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM employee_time_off WHERE julianday(ends_at) >= julianday(?) AND julianday(starts_at) < julianday(?)").bind(from, to).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
+    env.DB.prepare("SELECT timezone, booking_start_time AS startTime, booking_end_time AS endTime, working_days AS workingDays FROM organization_settings WHERE id = 1").first<{ timezone: string; startTime: string; endTime: string; workingDays: string }>(),
   ]);
   const revenue = Number(grossRevenue?.value ?? 0) - Number(refunds?.value ?? 0);
   const expenseAmount = Number(expenses?.value ?? 0);
@@ -67,7 +62,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const profit = revenue - expenseAmount - salaryFund;
   let scopedSchedules = schedules.results ?? [];
   if (employeeId) scopedSchedules = scopedSchedules.filter((row) => row.employeeId === employeeId);
-  const availableMinutes = calculateAvailableWorkingMinutes(scopedSchedules, timeOff.results ?? [], start, end, settings?.timezone ?? "Asia/Almaty");
+  const availableMinutes = calculateAvailableWorkingMinutes(scopedSchedules, timeOff.results ?? [], start, end, timezone, settings ?? {});
   const occupiedMinutes = Number(occupied?.value ?? 0);
   const completed = Number(appointmentCounts?.completed ?? 0);
   const uniqueClients = Number(appointmentCounts?.uniqueClients ?? 0);
