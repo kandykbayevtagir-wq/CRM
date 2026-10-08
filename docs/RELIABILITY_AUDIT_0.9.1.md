@@ -99,12 +99,12 @@ Automatically applied and verified through API:
 
 - About description exactly as requested and all 13 requested topics.
 - Active `production-main` ruleset targeting `refs/heads/main`, no permanent bypass actors, no force pushes or branch deletion.
-- Require PR, one approving review, dismiss stale approvals, require approval of the latest push and resolved conversations; strict required `quality` check, provided by GitHub Actions.
+- Require PR, one approving review, dismiss stale approvals, require approval of the latest push and resolved conversations; strict required `quality`, `codeql`, `dependency-review` checks, with names and GitHub Actions application ID verified from actual PR check runs.
 - Dependabot vulnerability alerts and automated security fixes enabled.
 - Private vulnerability reporting enabled.
 - Secret scanning and push protection were already enabled and remain enabled; no secret-scanning alerts were returned at audit time. This is not a full historical secret audit.
 
-The checked-in ruleset is the reproducible policy template. Additional security check enforcement is verified on the PR before handoff. GitHub settings are live independently from unmerged README/workflow/license files.
+The checked-in ruleset matches the applied policy. CodeQL analysis and dependency review ran successfully and returned no open code-scanning alerts at the initial candidate audit. The updated read-only production monitor also passed [candidate workflow_dispatch run 37836663945](https://github.com/kandykbayevtagir-wq/CRM/actions/runs/37836663945); this is **not** evidence that the new schedule runs before merge. GitHub settings are live independently from unmerged README/workflow/license files.
 
 There is no permanent admin exemption. If the independent reviewer is unavailable, normal merge is blocked. Emergency maintenance should use a reviewed revert/hotfix PR where possible. An administrator can explicitly edit the ruleset in a documented break-glass incident, record the exact reason/commit, run all possible validation, then restore the policy. Cloudflare rollback to an already verified deployment is separate from bypassing GitHub checks. No emergency exception was exercised in this task.
 
