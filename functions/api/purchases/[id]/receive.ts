@@ -37,6 +37,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   let conditionalStatements = 0;
   const statements: D1PreparedStatement[] = [];
   const requestedMovementKeys: string[] = [];
+  const pendingItems: Array<{id:string;quantity:number}> = [];
   for (const item of items) {
     const row = await env.DB.prepare("SELECT pi.id, pi.product_id AS productId, pi.ordered_quantity AS orderedQuantity, pi.received_quantity AS receivedQuantity, pi.unit_cost AS unitCost, p.name, p.purchase_price AS purchasePrice FROM purchase_items pi INNER JOIN products p ON p.id = pi.product_id WHERE pi.id = ? AND pi.purchase_id = ?").bind(item.purchaseItemId, purchaseId).first<{ id: string; productId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; name: string; purchasePrice: number }>();
     if (!row) return badRequest("Позиция закупки не найдена");
@@ -47,6 +48,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
     const existingMovement = await env.DB.prepare("SELECT id FROM stock_movements WHERE idempotency_key = ? LIMIT 1").bind(movementKey).first<{ id: string }>();
     if (existingMovement) continue;
     requestedMovementKeys.push(movementKey);
+    pendingItems.push({id:item.purchaseItemId,quantity:item.quantity});
     const movementId = newId();
     const totalCost = new Decimal(item.quantity).mul(unitCost).toNumber();
     conditionalStatements += 1;
@@ -69,10 +71,20 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, param
   statements.push(env.DB.prepare(`UPDATE purchases SET status = CASE WHEN (SELECT COUNT(*) FROM purchase_items WHERE purchase_id = ? AND received_quantity < ordered_quantity) = 0 THEN 'RECEIVED' ELSE 'PARTIALLY_RECEIVED' END, delivery_date = COALESCE(delivery_date, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(purchaseId, purchaseId));
   statements.push(auditStatement(env.DB, user, "purchase", purchaseId, "RECEIVE", null, { items }));
   try {
-    const results = await env.DB.batch(statements);
+    const guardId=newId();
+    const guards=[
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM purchases p
+        WHERE p.id=? AND p.status IN ('ORDERED','PARTIALLY_RECEIVED')
+        AND NOT EXISTS(SELECT 1 FROM json_each(?) requested LEFT JOIN purchase_items pi
+          ON pi.id=json_extract(requested.value,'$.id') AND pi.purchase_id=p.id
+          WHERE pi.id IS NULL OR pi.received_quantity+CAST(json_extract(requested.value,'$.quantity') AS REAL)>pi.ordered_quantity))`)
+        .bind(guardId,purchaseId,JSON.stringify(pendingItems)),
+      env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(guardId),
+    ];
+    const results = await env.DB.batch([...guards,...statements]);
     // Every item is written by three statements (movement, item, product price); a zero-change movement means
     // a concurrent receipt already consumed the remainder, so the whole batch must not count as a success.
-    const movementResults = results.filter((_, index) => index % 3 === 0 && index < conditionalStatements * 3);
+    const movementResults = results.slice(guards.length).filter((_, index) => index % 3 === 0 && index < conditionalStatements * 3);
     if (movementResults.some((result) => Number(result?.meta?.changes ?? 0) !== 1)) {
       // The batch is atomic, but D1 has no rollback-on-condition: a no-op movement left the other statements untouched too.
       const applied = await env.DB.prepare(`SELECT COUNT(*) AS value FROM stock_movements WHERE idempotency_key IN (${requestedMovementKeys.map(() => "?").join(",")})`).bind(...requestedMovementKeys).first<{ value: number }>();

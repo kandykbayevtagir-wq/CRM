@@ -1,257 +1,161 @@
 # podologymk CRM
 
-v0.9.0 — Automation & Control — сохраняет ядро v0.8.0 и добавляет управляемую автоматизацию, эксклюзивный лист ожидания и проверяемое восстановление операций.
+Production-grade CRM and Telegram Mini App for appointment operations, client management, finance, payroll, inventory, automation and business reporting. Built with Next.js, TypeScript, Cloudflare Pages, Workers and D1.
 
-## Обновление v0.9.0
+Release candidate: **v0.9.1 — Reliability & Repository Hardening**. This patch improves reliability and repository controls; it is not a large feature release. See [release notes](RELEASE_NOTES.md), [operations](OPERATIONS.md) and the [release audit](docs/RELIABILITY_AUDIT_0.9.1.md).
 
-- Рассылки по расписанию готовятся транзакционными страницами с сохранением курсора. Остановку можно выполнить из интерфейса; перед доставкой повторно проверяются согласие, адресат и статус кампании.
-- Автоматические напоминания о повторном обращении и назначенных задачах; опциональная ежедневная Telegram-сводка владельцу. Уведомления о закрытых/переназначенных задачах подавляются.
-- Лист ожидания предлагает эксклюзивное окно на 10 минут. Полный интервал защищён триггерами; принятие, повтор, отказ и истечение срока не создают двойной записи. Можно запросить более раннее время для своей неоплаченной записи с одной услугой.
-- Ключи финансовых POST сохраняются на устройстве без персональных данных и тела формы. После перезагрузки можно проверить квитанцию или повторить те же данные с исходным ключом. Смена пользователя не показывает чужие операции.
-- Финансовая сверка проверяет отдельные источники и проводки, включая суммы, даты, направления и отсутствующие ссылки; компенсирующие ошибки не скрываются за общим итогом.
-- «Сегодня» показывает просроченные задачи/повторные обращения, возраст очереди и статус автоматизации. Независимый GitHub workflow проверяет health/readiness каждые 5 минут (расписание GitHub может задерживаться).
-- Изолированные staging Pages/D1, реальный API E2E с синтетически подписанным Telegram initData, проверка восстановления приватного backup. Основной бот не используется для QA.
+## Overview
 
-Runtime: D1 migration 0014; private workers `podologymk-automation` и `podologymk-delivery` вызываются только через service bindings. Production URL не меняется: https://podologymk-crm.pages.dev.
+The CRM supports a multi-branch appointment business with separate staff and client experiences. Telegram provides the entry point and verified identity; all access decisions and business mutations run on the backend. This repository is proprietary software, not an open-source distribution.
 
-## Обновление v0.8.0
+## Core capabilities
 
-- Расходы, аренда, коммунальные платежи и зарплатные корректировки получают транзакционные квитанции идемпотентности. Повтор с тем же ключом и содержимым возвращает исходный результат; ключ сохраняется в форме при сетевой ошибке. Без ключа старый API остаётся совместимым, но повтор не гарантированно безопасен.
-- Расчёт зарплаты инвалидируется при поздней оплате, возврате, завершении оплаченного визита, изменении зарплатных условий и корректировок. Изменение входных данных во время расчёта откатывает устаревший результат. Закрытые снимки не переписываются.
-- Оплаты, возвраты, проведённые строки PAYMENT/REFUND/SALARY и услуги завершённого визита защищены триггерами базы. Для корректировки используется отдельная операция.
-- Расходы и обязательства защищены ревизиями от конкурентного перезаписывания. Аннулированный ledger не возвращается в проводки.
-- Истёкшая финальная аренда сообщения завершает связанные напоминания и кампании. Ручной повтор восстанавливает их статусы, но перед отправкой снова проверяет актуальность визита, согласие и активность клиента.
-- Worker имеет аренду запуска; настройка меню Telegram выполняется независимо от доставки. Подтверждение бронирования становится SENT только после ответа Telegram. Health проверяет наличие схемы 0013.
-- Добавлен экран восстановления после ошибки React и ограничено время авторизации Telegram. CI выполняет аудит production-зависимостей и браузерные проверки мобильных/настольных экранов, включая повтор расхода после сетевой ошибки.
+- Branches, services, specialist assignments, working schedules, breaks, absences and closures.
+- Client profiles, booking, rescheduling, cancellation, check-in, reviews, loyalty and waitlists.
+- Payments, refunds, expenses, rent, utilities, immutable closed payroll, stock and purchases.
+- Operational dashboards, financial reconciliation, reports, role-scoped CSV exports and recovery receipts.
+- Telegram outbox, reminders, consent-based campaigns, follow-ups, tasks and optional owner summaries.
 
-Порядок безопасной публикации и отката: [OPERATIONS.md](OPERATIONS.md). Гарантия отсутствия любых сбоев не заявляется: Telegram sendMessage остаётся at-least-once, а финансовые квитанции защищают повтор только при сохранении исходного ключа.
+## Architecture
 
-## Обновление v0.7.1
+The Next.js App Router application builds a **static export** in `out/`. Cloudflare Pages serves it and routes `/api/*` to Pages Functions. Functions and private Workers use Cloudflare D1 directly; there is no Next.js production Node server.
 
-- Отчёты «Прибыль и убытки», KPI и экспорт раньше падали или возвращали нули из-за несовпадения параметров SQL; теперь все периоды считаются одинаково, последний день периода включается, а даты интерпретируются в часовом поясе центра (`Asia/Almaty`).
-- Старые записи с SQLite-временем (`YYYY-MM-DD HH:MM:SS`) и новые ISO-значения сравниваются через `julianday()`, API возвращает канонический ISO; смена статуса старой записи больше не считается переносом и не рассылает клиенту «запись изменена».
-- Время из форм (`datetime-local`) трактуется как местное время центра, а не UTC: записи, отсутствия, расходы, аренда, коммунальные, задачи и расчётные периоды.
-- Роли: специалист не видит суммы оплат и внутренние заметки клиентов, администратор — зарплаты, себестоимость и финансовые итоги; ленты уведомлений и быстрые действия ограничены правами; архивная карточка клиента теряет доступ к кабинету и бронированию.
-- Зарплата: периоды открываются по местным дням и не пересекаются, итог считается через `Decimal`, закрытие с отрицательным итогом отклоняется вместо «тихой» потери строки в ledger.
-- Закупки: принять можно только заказанную закупку, повтор запроса распознаётся по ключу, одновременный приём не завершается ложным успехом; кнопка «Заказать» добавлена в интерфейс.
-- Перенос записи клиентом сохраняет согласованную цену и услуги; редактирование сотрудника не стирает филиалы; аннулированный расход нельзя «переоткрыть» правкой; архивный поставщик не активируется случайно.
-- Telegram-кампании доставляются только клиентам с согласием на рассылки: согласие добавлено в анкету и профиль Mini App, счётчик получателей честный; шаблон отмены снова содержит причину (`{message}`).
-- Миграция `0012_audit_fixes.sql`: триггер пересечений проверяется только при реальном изменении времени/специалиста, поэтому статусы старых пересекающихся записей снова меняются и webhook не падает; данные не переписываются.
-- Безопасность: cookie сессии `SameSite=None; Secure` для Web Telegram при сохранении проверки Origin, выход доступен без действующей сессии, экранирование `LIKE`, лимиты длины строк и размеров пакетов, проверка ссылок на филиалы/сотрудников/сегменты, `object-src 'none'` и webk/webz в CSP.
-- Интерфейс: диалоги подтверждения вместо `window.confirm`/`alert` (не работают в Telegram), состояния загрузки и ошибок на всех формах, защита от двойной отправки, ролевое скрытие недоступных действий, живой расчёт коммунального платежа, перерывы в расписании, карточка состояния системы вместо статического текста, печать, фокус и контраст, 44px цели на мобильных, без горизонтального скролла на 390px.
+Key source locations:
 
-Применить D1 migration `0012` и опубликовать Pages. Адреса Mini App и webhook не меняются.
+- `src/app/`, `src/components/`: staff/client UI and shared components.
+- `functions/api/`, `functions/_lib/`: API, authorization and D1 business logic.
+- `workers/`: cron coordinator, private automation and private delivery.
+- `migrations/`: ordered, append-only production D1 migrations.
+- `tests/`, `scripts/`: regression tests, real-runtime QA and operational tooling.
+- `prisma/`: PostgreSQL preparation/reference schema, **not the production database**.
 
-Проверки: TypeScript, ESLint (включая `react-hooks`), 81 тест (API на SQLite с полной цепочкой migrations, миграция 0012, отчёты, роли и IDOR), production build, `npm audit` без уязвимостей, браузерный smoke 22 страниц персонала и кабинета клиента на 1440/390 px.
+## Security model
 
-## Обновление v0.7.0
+Telegram initData is verified server-side using HMAC, bounded auth dates and duplicate-key rejection. Sessions use random tokens stored as hashes and HttpOnly/Secure cookies. API middleware enforces sessions, origin rules, staff allowlists, request size/type limits and endpoint permissions.
 
-- «Сегодня» (`/today`): хронологическая лента приёмов, подтверждение, check-in, начало/завершение, отмена/неявка с причиной, частичная оплата, звонок клиенту и контроль очереди Telegram.
-- Бот: команды записи, профиля, бонусов, контактов и расписания; клиент подтверждает визит или отменяет его после подтверждения; сотрудники получают расписание по своей роли.
-- Webhook сохраняет уникальный Telegram update вместе с бизнес-действием и ответом в очереди; повторная доставка update не повторяет действие.
-- Единая очередь для напоминаний и ответов: атомарное получение сообщения, ограниченная аренда обработки, восстановление зависших отправок, backoff, `retry_after`, постоянные ошибки и ручной повтор из «Сегодня».
-- Бонусы сохраняются атомарно с завершением визита; закрытые визиты, зарплатные строки и корректировки защищены в базе.
-- Изменения записи используют версии; оплата/возврат обновляют версию визита и инвалидируют открытый рассчитанный payroll.
-- Телефонные дубли защищены триггерами; внутренние заметки клиента/визита отделены от клиентского кабинета.
-- Клиент может сохранить визит в календарь; календарный экспорт проверяет владельца записи.
-- Контакты показывают реальные телефоны филиалов; лист ожидания виден администратору в «Сегодня», заявки закрываются с аудитом. Автоматические предложения свободного времени пока не включены.
-- Каталог клиента не раскрывает себестоимость; availability корректно учитывает старые SQLite timestamps.
-- Общие мобильные таблицы, доступные диалоги, состояния соединения, тайм-ауты API и обновление при возвращении в приложение.
-- Next.js 16.4.0; исправлены известные уязвимости зависимостей, зафиксированные проверкой на дату релиза.
+CLIENT access is tied to the authenticated client card. A phone number alone cannot claim another card. SPECIALIST queries and mutations are scoped to the linked active employee. Sensitive reports, exports, finance, payroll, settings and audit logs require explicit permissions. Parameterized SQL, transaction guards, revisions and database constraints protect mutations. See [SECURITY.md](SECURITY.md) for responsible reporting.
 
-Применить D1 migrations `0010` и `0011`, опубликовать Pages и notification Worker. Worker проверяет доставку каждую минуту и автоматически обновляет меню/команды бота один раз для версии релиза. База и адрес Mini App остаются существующими.
+## Roles and permissions
 
-Проверки: TypeScript, ESLint, 46 тестов (включая API на SQLite с полной цепочкой migrations), production build и браузерные проверки 1440/390 px с тестовыми ответами API. Для integration tests требуется Node.js 24.
+| Role | Scope |
+| --- | --- |
+| OWNER | Business administration, financial controls and access management. |
+| ADMINISTRATOR | Appointment/client operations, payment collection, stock, purchases and communication; not payroll or unrestricted finance. |
+| SPECIALIST | Own appointments and associated clients, reviews, tasks and follow-ups; no client financial/internal CRM details. |
+| ACCOUNTANT | Financial reporting, expenses, payroll, inventory and purchases; no unrestricted appointment administration. |
+| CLIENT | Own profile, appointments, availability, waitlist, reviews, calendar and loyalty. |
 
-Очередь обеспечивает доставку с повторами (at-least-once). Bot API не предоставляет ключа идемпотентности для `sendMessage`: при сбое после принятия сообщения Telegram и до записи результата в D1 редкая повторная доставка возможна. Это отражено в механике аренды и диагностике; обещания exactly-once нет.
+The authoritative matrix is [permissions](src/lib/permissions/index.ts). Hiding a navigation item does not authorize an API request.
 
-Prisma/PostgreSQL остаётся подготовленной схемой, а текущий production runtime — D1. Оплата картой/QR в CRM фиксирует платёж администратора; внешнего эквайринга здесь нет. Отдельные кабинеты/ресурсы, кассовые смены и семейные профили требуют последующих продуктовых этапов.
+## Telegram integration
 
-Система покрывает полный рабочий поток: клиент → запись → специалист и филиал → проведение приёма → фактическая оплата → ledger → зарплата → расходы → прибыль и отчёты.
+The primary bot is `@podologymkbot`. Mini App entry points, commands and callbacks use verified identities; webhook requests require the configured secret. Update deduplication and message event keys limit duplicate processing. The primary bot must not be repointed to QA.
 
-## Архитектура
+Bot secrets remain in encrypted Cloudflare configuration. The automation Worker never receives the bot token. Delivery receives it only through a private service binding, not a public endpoint.
 
-- Next.js 16 + React 19 + TypeScript — статически экспортируемый интерфейс Mini App.
-- Cloudflare Pages — фронтенд и Pages Functions API.
-- Cloudflare D1 — текущий production runtime и облачный источник данных существующего проекта.
-- Prisma 7 + PostgreSQL — каноническая расширенная схема и безопасная migration baseline в `prisma/`; runtime cutover на PostgreSQL/Hyperdrive выполняется после предоставления production `DATABASE_URL` или Hyperdrive binding.
-- Telegram Mini App initData проверяется на сервере, после чего создаётся HttpOnly-сессия с хешированным токеном.
-- `src/lib/` содержит переиспользуемые правила телефона, permissions, переходов статусов, payroll, ledger и Decimal-расчётов; страницы не являются источником финансовой истины.
+## Automation
 
-Текущий D1 runtime сохранён специально: он уже подключён к живому Cloudflare Pages проекту и не требует выдуманных PostgreSQL credentials. Prisma-схема не подменяет production D1 автоматически и не отправляет секреты в браузер.
+The notification coordinator runs every minute, claims a two-minute lease, enqueues reminders, calls private automation, drains bounded delivery batches and separately configures the bot menu. Automation prepares campaigns in resumable pages and scans waitlists incrementally.
 
-## Основные возможности v0.2.0
+An unspecified waitlist branch means all eligible active branches. Service assignments, employee/branch relationships, schedules, absences, closures, appointments and active holds are evaluated together. Selection is ordered by start time, branch ID and employee ID. Offers reserve the full interval for ten minutes; creation and acceptance recheck resources atomically. Invalid/expired offers are released, and stale Telegram offers are suppressed before delivery.
 
-- реальный CRUD клиентов с нормализацией телефона, защитой дублей, архивом, пагинацией и карточкой `/clients/[id]`;
-- каталог услуг с ценой, себестоимостью, длительностью и snapshot цены в записи;
-- сотрудники, зарплатные настройки и связь с несколькими филиалами через `employee_branches`;
-- рабочие графики, перерывы, time-off и блокировка времени;
-- календарь день/неделя, фильтры филиала, специалиста, статуса и даты;
-- строгие переходы `SCHEDULED → CONFIRMED → ARRIVED → IN_PROGRESS → COMPLETED`, отмена и no-show;
-- серверная проверка конфликтов пересекающихся записей;
-- платежи `CASH`, `CARD`, `TRANSFER`, `QR`, `OTHER`, частичная оплата и отдельные возвраты;
-- единый финансовый ledger для оплат, возвратов, расходов, аренды, коммунальных и зарплат;
-- аренда со сроком и статусами `PLANNED/DUE/PAID/OVERDUE`;
-- коммунальные услуги с показаниями и формулой `(current - previous) × tariff + fixedFee`;
-- payroll engine: фикс + процент от оплаченной части завершённых приёмов + бонусы − удержания − авансы ± ручные корректировки;
-- пересчёт открытого периода и immutable snapshot после закрытия периода;
-- реальные dashboard/reports агрегаты, средний чек, margin, загрузка по рабочему времени, выручка по специалистам и услугам;
-- RBAC для `OWNER`, `ADMINISTRATOR`, `SPECIALIST`, `ACCOUNTANT` и `CLIENT`: новый Telegram пользователь автоматически получает только клиентский кабинет, а staff-доступ выдаётся отдельно;
-- AuditLog для критичных изменений и уведомительная архитектура Cloudflare Worker;
-- CSV-экспорт клиентов, записей, платежей, операций и зарплаты;
-- бонусы, отзывы, клиентский кабинет, лист ожидания, check-in и Telegram-напоминания из предыдущего этапа.
+## Financial integrity
 
-## Клиентский опыт v0.3.0
+Payments, refunds and recoverable financial writes use actor-scoped idempotency receipts. Reusing a key with different input is rejected. Appointment, stock, notification and audit side effects commit together where required. Closed payroll is immutable, stock cannot become negative, and reconciliation checks individual ledger references and amounts. Discrepancies are reported, never automatically repaired.
 
-- единая нормализация телефонов Казахстана в формате `77001234567` и reusable `PhoneInput` с форматированием, autofill/paste и корректным поведением клавиатуры;
-- onboarding с Telegram-prefill имени, обязательными только именем и телефоном, структурированными ошибками рядом с полями и безопасным linking по телефону;
-- читаемый профиль с отдельным режимом редактирования, настройкой напоминаний и рабочей кнопкой связи через Telegram;
-- умный booking flow с быстрыми датами, выбором любого/конкретного специалиста, ближайшим доступным окном, waitlist-дубликатами и восстановлением после конфликта;
-- история записей по группам «Предстоящие / Прошедшие / Отменённые», перенос, подтверждение отмены, повторная запись и отзывы после завершённого визита;
-- Telegram BackButton, safe-area переменные, мягкие haptics, скрытие клавиатуры после действий и защита от устаревших ответов при быстром переключении дат;
-- клиентские ошибки преобразуются в понятные сообщения, а интерактивные состояния имеют loading, empty, error и success варианты.
+## Testing and QA
 
-## Надёжность v0.4.0
+Node.js 24 is the tested baseline. Install from the lockfile, not floating global tools:
 
-- неизвестный Telegram ID всегда получает роль `CLIENT`; первоначальный `OWNER` создаётся только для `CRM_OWNER_TELEGRAM_ID`;
-- `CRM_ALLOWED_TELEGRAM_IDS` разрешает вход уже созданным staff-пользователям, но больше не выдаёт роль новому пользователю;
-- специалист не может изменить свою запись и назначить её другому сотруднику;
-- `employee_services` ограничивает доступные услуги конкретного специалиста и филиала;
-- availability использует только активный персональный график специалиста — отсутствие графика означает отсутствие окон;
-- 15-минутные reservation-блоки и D1 uniqueness защищают от параллельного бронирования пересекающихся услуг;
-- client booking поддерживает `idempotencyKey`, поэтому сетевой retry возвращает уже созданную запись;
-- новая migration `0007_operations_reliability.sql` добавляет service matrix, slot reservations и idempotency storage.
-
-## Business OS v0.5.0
-
-- склад с товарами, категориями, поставщиками, филиальными остатками, движениями и low-stock предупреждениями;
-- закупки с частичным получением, историей прихода и idempotent списанием в склад;
-- расходники услуг: при завершении приёма материалы списываются один раз и связываются с записью;
-- P&L с gross/net revenue, возвратами, себестоимостью, комиссиями, зарплатой, арендой, коммунальными и operating profit;
-- KPI специалистов, contribution margin, загрузка рабочего времени, retention и план/факт с прогнозом текущего темпа;
-- автоматические CRM-сегменты, follow-up после визита, кампании Telegram и outbox с retry/дедупликацией сообщений;
-- внутренние задачи, Notification Center, сверка payments/refunds/payroll/rent/utilities с ledger;
-- drill-down зарплаты до оплаченных приёмов и корректировок при сохранении immutable закрытого периода;
-- глобальный поиск `Ctrl/Cmd + K`, CSV-экспорт склада, движений, закупок, задач, KPI и P&L;
-- единый glass-поверхностный UI, адаптивные операционные экраны, loading/empty/error/success состояния и production health endpoint;
-- новая D1 migration `0008_business_os.sql`; Prisma schema синхронизирована с добавленными сущностями.
-
-## Production hardening v0.6.0
-
-- запрещено автоматически присоединять Telegram-пользователя к существующей карточке клиента только по введённому номеру телефона;
-- SPECIALIST получает на backend только свои записи, клиенты, задачи, follow-up, отзывы и ближайшие события;
-- запись проходит последовательные статусы CONFIRMED → ARRIVED → IN_PROGRESS → COMPLETED, а завершение доступно только из IN_PROGRESS;
-- оплата, возврат, ручное списание и приёмка закупки используют условные D1-записи и idempotency, поэтому конкурентный retry не создаёт отрицательный остаток или двойной платёж;
-- P&L строит дневную net-выручку после возвратов, учитывает периодные платежи в детализации услуг и фильтрует payroll по выбранному срезу;
-- подтверждение, перенос и отмена клиентской записи ставятся в надёжный Telegram outbox с уникальным event key и восстановлением зависших PROCESSING;
-- модальные окна получили Escape, фокус-ловушку, возврат фокуса и доступный заголовок; уведомления можно отметить прочитанными;
-- усилены CSP, HSTS, frame и referrer headers, мобильные touch targets и safe-area отступы;
-- добавлена D1 migration 0009_production_hardening.sql.
-
-## Локальный запуск
-
-```bash
-npm install
-npm run typecheck
-npm run test
-npm run lint
-npm run build:pages
-```
-
-Для локального D1:
-
-```bash
-npm run db:local
-npx wrangler pages dev out
-```
-
-Локальные Pages Functions доступны через тот же origin. В development можно использовать локальную сессию только для smoke-тестов; production доступ всегда идёт через Telegram auth и серверную сессию.
-
-## PostgreSQL / Prisma
-
-Каноническая схема находится в [prisma/schema.prisma](prisma/schema.prisma), baseline migration — в `prisma/migrations/0001_real_crm_core/`.
-
-Не запускайте Prisma migration без настоящего PostgreSQL:
-
-```bash
-export DATABASE_URL="postgresql://user:password@host:5432/database?sslmode=require"
-npm run db:validate
+```sh
+npm ci
+npm audit --omit=dev --audit-level=high
+npm audit --audit-level=high
 npm run db:generate
-npx prisma migrate deploy
-npm run db:seed
+npm run db:validate
+npm run typecheck
+npm run lint
+npm test
+npm run build:pages
+npm run qa:api
+npx --no-install playwright install chromium
 ```
 
-`DATABASE_URL` используется только серверными Prisma-командами и никогда не попадает в frontend bundle. Для Cloudflare Pages direct PostgreSQL connection не встраивается в браузер: нужен Hyperdrive binding либо отдельный Worker/API runtime с секретным подключением.
+For browser QA, run `node scripts/serve-export.mjs`, then `npm run qa:ui` in another terminal. CI installs Chromium system dependencies as well.
 
-## Cloudflare Pages / D1
+Unit/integration tests replay the complete D1 migration chain. `qa:api` creates a fresh **local** D1, starts real Pages Functions and an automation Worker, then tests signed synthetic Telegram auth, permissions, recovery, concurrent booking and concurrent multi-branch offers. UI QA uses mocked API responses on desktop/mobile and does not prove live Telegram authentication.
 
-Production project: `podologymk-crm`.
+## Deployment architecture
 
-```bash
-npm run db:migrate
-npm run deploy:pages
-```
+Production uses Pages `podologymk-crm`, D1 `podologymk_crm`, the `podologymk-notifications` coordinator and private `podologymk-automation` / `podologymk-delivery` service Workers. Separate staging Pages/D1 use synthetic identities and suppress Telegram delivery.
 
-D1 migration files находятся в `migrations/`. Prisma migration и D1 migration — разные targets; Prisma SQL нельзя применять к D1.
+Configuration lives in the relevant `wrangler*.jsonc` files. Do not substitute staging bindings into production or deploy private Workers with public routes.
 
-Секреты задаются только через Cloudflare:
+## Current production runtime
 
-```bash
-npx wrangler pages secret put TELEGRAM_BOT_TOKEN --project-name podologymk-crm
-npx wrangler pages secret put CRM_ALLOWED_TELEGRAM_IDS --project-name podologymk-crm
-npx wrangler pages secret put CRM_OWNER_TELEGRAM_ID --project-name podologymk-crm
-npx wrangler pages secret put TELEGRAM_WEBHOOK_SECRET --project-name podologymk-crm
-```
+Production URL: [podologymk-crm.pages.dev](https://podologymk-crm.pages.dev). Active database: **Cloudflare D1**, schema chain through `0014`.
 
-Планировщик напоминаний:
+Audit snapshot on 2026-10-09 (Asia/Aqtobe): production still reported **0.9.0**. v0.9.1 is a PR candidate and is not deployed by this task. Prisma/PostgreSQL is only preparation/reference tooling; its migrations must never be applied to D1.
 
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.notifications.jsonc
-npm run deploy:notifications
-```
+## Local development
 
-После деплоя Telegram Mini App кнопка настраивается только локальной командой с секретом:
+Use `npm ci` and `npm run dev` for frontend work. Build before running `qa:api` or the export preview. Real local API QA is isolated automatically and never writes to the production hostname.
 
-```bash
-TELEGRAM_BOT_TOKEN="..." MINI_APP_URL="https://podologymk-crm.pages.dev" npm run configure:telegram
-```
-
-`CRM_ALLOWED_TELEGRAM_IDS` ограничивает staff-доступ. Новый Telegram ID создаётся автоматически только с ролью `CLIENT`: он не видит сотрудников, финансы, настройки и другие CRM-разделы. Сотрудникам роль и доступ выдаются отдельно через настройки или allowlist.
+For manual Pages/D1 development, use a local/staging configuration and `--local` migration commands. Configure synthetic secrets privately in `.dev.vars`; do not use production credentials as fixtures. There is no production authentication bypass.
 
 ## Environment variables
 
-Список без секретных значений находится в [.env.example](.env.example).
+[.env.example](.env.example) contains non-production examples. Never place bot tokens or database credentials in `NEXT_PUBLIC_*` variables.
 
-- `DATABASE_URL` — только для Prisma/PostgreSQL migration и seed;
-- `SEED_OWNER_TELEGRAM_ID` — development seed;
-- `TELEGRAM_BOT_TOKEN` — Cloudflare encrypted secret;
-- `CRM_ALLOWED_TELEGRAM_IDS` — Cloudflare encrypted secret, CSV Telegram ID сотрудников;
-- `CRM_OWNER_TELEGRAM_ID` — единственный Telegram ID, которому разрешён первоначальный owner bootstrap;
-- `TELEGRAM_WEBHOOK_SECRET` — Cloudflare encrypted secret.
+| Name / binding | Purpose |
+| --- | --- |
+| DB | D1 binding for Pages and Workers. |
+| TELEGRAM_BOT_TOKEN | Encrypted Pages/coordinator secret; never configured on automation. |
+| TELEGRAM_WEBHOOK_SECRET | Encrypted Pages webhook validation secret. |
+| CRM_OWNER_TELEGRAM_ID | Encrypted initial owner bootstrap identity. |
+| CRM_ALLOWED_TELEGRAM_IDS | Encrypted staff identity allowlist. |
+| MINI_APP_URL | Mini App public origin, separate per environment. |
+| JOBS / DELIVERY | Private coordinator service bindings. |
+| APP_ENV | `staging` disables Telegram delivery and production cron readiness requirements. |
+| DATABASE_URL / SEED_OWNER_TELEGRAM_ID | Optional local PostgreSQL/Prisma reference tooling only. |
 
-## Tests and checks
+## Database migrations
 
-```bash
-npm run test        # Vitest: payroll, permissions, overlap, payments, ledger, reports, roles/IDOR, migration 0012
-npm run typecheck   # TypeScript + Prisma client generation
-npm run lint        # ESLint (typescript-eslint + react-hooks)
-npm run build:pages # production static export
-npm run qa:ui       # browser smoke: serve ./out first, then CRM_PREVIEW_ORIGIN=http://localhost:8788 npm run qa:ui
-```
+D1 migration files are immutable once published. Apply them in order and validate foreign keys and business constraints before publication. v0.9.1 requires **no new migration**; it remains compatible with schema `0014`.
 
-Браузерный smoke (`scripts/ui-smoke.mjs`) открывает все страницы персонала и кабинета клиента на 1440 и 390 px с тестовыми ответами API, проверяет отсутствие ошибок выполнения и горизонтального скролла, диалоги оплаты, записи и архивации, профиль клиента с согласием на рассылки и бронирование. Нужен `playwright` (`npm i -D playwright`); переменные `PLAYWRIGHT_CHANNEL=chrome` или `PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome` выбирают браузер. Требуется Node.js ≥ 22.13 (`node:sqlite`).
+Always back up before production database changes, keep exports private and validate restores in isolation. See [OPERATIONS.md](OPERATIONS.md). PostgreSQL migrations in `prisma/migrations/` are a different target.
 
-Критические write endpoints повторно валидируют входные данные и permissions на backend, используют D1 batch transactions, а финансовые суммы в shared payroll/ledger rules считаются через `Decimal`.
+## Release process
 
-## Release notes
+1. Fetch latest GitHub main and record its SHA and the current published tag.
+2. Work on a dedicated branch, add regression tests and run the full validation pipeline.
+3. Open a PR; require current quality/security checks and an independent review.
+4. Merge and publish only after explicit owner authorization.
+5. Record the exact deployment commit, read-only health/readiness and worker evidence; create a new tag without rewriting old tags.
 
-Подробный список изменений: [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Repository settings and the emergency maintenance tradeoff are documented in the [hardening audit](docs/RELIABILITY_AUDIT_0.9.1.md).
 
-## Known technical debt
+## Operational recovery
 
-1. Production сейчас остаётся на существующем Cloudflare D1, чтобы не ломать работающий Pages deploy. Для полноценного PostgreSQL runtime нужен production `DATABASE_URL`/Hyperdrive и отдельный cutover с миграцией данных из D1.
-2. Cloudflare Queue/DLQ bindings не добавлены в текущий deploy: outbox работает через scheduled Worker с retry/backoff и восстановлением lease; Queue можно подключить без изменения доменной модели.
-3. Production runtime сохраняется на D1; Prisma/PostgreSQL остаётся канонической схемой для будущего controlled cutover через Hyperdrive/API.
-4. Массовые кампании ограничены Telegram и требуют настроенного `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` и cron Worker; получают их только клиенты, включившие согласие на рассылки в кабинете.
-5. Cookie сессии использует `SameSite=None`, чтобы Mini App работал во встроенном Web Telegram; Safari с блокировкой сторонних cookie по-прежнему требует открытия Mini App в приложении Telegram или напрямую по адресу.
-6. Старые строки с SQLite-временем намеренно не переписываются миграцией: код читает оба формата. Единовременная нормализация возможна отдельной миграцией после резервной копии.
+After an ambiguous financial response, retry the **same** operation with the same key and unchanged input. `/api/mutation-status` exposes only the current actor's authorized receipts; NOT_FOUND is not proof that the original request failed.
+
+Expired worker/outbox leases recover on later invocations. Telegram failures use bounded retries and backoff. A rollback preserves additive migrations and must not restore an old database automatically. Follow [OPERATIONS.md](OPERATIONS.md) for backup, recovery and deployment checks.
+
+## Known limitations
+
+- GitHub scheduled workflows are best-effort: they may be delayed or dropped and are not guaranteed to execute at an exact minute. A reliable uptime cadence needs an independent monitor.
+- Telegram sendMessage is at-least-once: a crash after acceptance but before the database commit can cause duplicate delivery. A message already in flight cannot be recalled by a later archival; acceptance still revalidates resources.
+- Worker call timeouts do not guarantee remote computation has stopped. Transaction guards, holds and unique event keys protect overlapping invocations.
+- Free-plan D1/Worker budgets and queue throughput require monitoring as load grows.
+- Live Telegram client login is not automated without a separate test bot.
+- A proprietary license restricts legal reuse; it does **not** make publicly visible source confidential. The repository remains public. Change visibility to **PRIVATE** if public access must be prevented.
+
+## License
+
+Copyright © 2026 Tagir Kandykbayev. All Rights Reserved.
+
+This is proprietary software. No permission is granted to copy, modify,
+redistribute, sublicense, publish, sell, host, or reuse the source code
+without prior written authorization from the copyright holder.
+
+See [LICENSE](LICENSE) for the complete terms.
