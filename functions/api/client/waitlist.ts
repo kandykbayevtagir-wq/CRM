@@ -4,19 +4,20 @@ import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, newId, optionalString, readJson } from "../../_lib/http";
 import { isoColumn } from '../../_lib/dates';
 import { auditStatement } from '../../_lib/audit';
+import { validHold } from '../../_lib/offer-eligibility';
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
   if (!user) return unauthorized();
   if (!isClient(user)) return forbidden();
-  if (!user.clientId) return json({ ok: true, items: [] });
+  if (!await getActiveClientId(env.DB,user)) return json({ ok: true, items: [] });
   const rows = await env.DB.prepare(`
     SELECT w.id, w.preferred_date AS preferredDate, w.status, w.appointment_id AS appointmentId,
       w.service_id AS serviceId,COALESCE(h.branch_id,w.branch_id) AS branchId,s.name AS serviceName, b.name AS branchName,
       h.id AS holdId,h.employee_id AS employeeId,e.full_name AS employeeName,
       ${isoColumn('h.starts_at')} AS startsAt,${isoColumn('h.expires_at')} AS expiresAt
     FROM client_waitlist w LEFT JOIN services s ON s.id = w.service_id
-    LEFT JOIN booking_holds h ON h.waitlist_id=w.id AND h.status='HELD' AND julianday(h.expires_at)>julianday('now')
+    LEFT JOIN booking_holds h ON h.waitlist_id=w.id AND ${validHold('h')}
     LEFT JOIN branches b ON b.id=COALESCE(h.branch_id,w.branch_id)
     LEFT JOIN employees e ON e.id=h.employee_id
     WHERE w.client_id = ? AND w.status IN ('ACTIVE', 'OFFERED') ORDER BY w.created_at DESC

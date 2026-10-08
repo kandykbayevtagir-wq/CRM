@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
@@ -14,9 +17,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -24,6 +27,12 @@ jobs:
         run: npm ci
       - name: Dependency security audit
         run: npm audit --omit=dev --audit-level=high
+      - name: Development tooling security audit
+        run: npm audit --audit-level=high
+      - name: Generate and validate Prisma reference schema
+        run: |
+          npm run db:generate
+          npm run db:validate
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
@@ -33,21 +42,10 @@ jobs:
       - name: Pages build
         run: npm run build:pages
       - name: Real Pages Functions and D1 integration
-        run: |
-          npm exec --yes --package=wrangler@4.148.0 -- wrangler d1 migrations apply podologymk_crm_staging --local --config wrangler.staging.jsonc --persist-to .wrangler/e2e
-          npm exec --yes --package=wrangler@4.148.0 -- wrangler d1 execute podologymk_crm_staging --local --config wrangler.staging.jsonc --persist-to .wrangler/e2e --file scripts/staging-fixture.sql
-          stage_dir=$(mktemp -d "$PWD/.wrangler/e2e-pages.XXXXXX")
-          ln -s "$PWD/functions" "$PWD/src" "$PWD/out" "$PWD/package.json" "$stage_dir/"
-          ln -s "$PWD/wrangler.staging.jsonc" "$stage_dir/wrangler.jsonc"
-          npm exec --yes --package=wrangler@4.148.0 -- wrangler --cwd "$stage_dir" pages dev out --ip 127.0.0.1 --port 8790 --persist-to "$PWD/.wrangler/e2e" --binding TELEGRAM_BOT_TOKEN=local-qa-token --binding CRM_OWNER_TELEGRAM_ID=990000001 --binding CRM_ALLOWED_TELEGRAM_IDS=990000001 --binding TELEGRAM_WEBHOOK_SECRET=local-qa-webhook > .wrangler/api-e2e.log 2>&1 &
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8790/api/health; then break; fi
-            sleep 1
-          done
-          npm run qa:api
+        run: npm run qa:api
       - name: Install browser for UI checks
-        run: npx --yes --package=playwright playwright install --with-deps chromium
+        run: npx --no-install playwright install --with-deps chromium
       - name: Browser UI checks
         run: |
           node scripts/serve-export.mjs &
-          npx --yes --package=playwright -c 'PLAYWRIGHT_MODULE="$(dirname "$(command -v playwright)")/../playwright" npm run qa:ui'
+          npm run qa:ui

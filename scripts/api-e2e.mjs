@@ -43,4 +43,26 @@ assert.deepEqual(visits.map(v=>v.response.status).sort(),[201,409],'only one con
 const winner=visits.find(v=>v.response.status===201);
 assert.equal((await request('/api/client/appointments/'+winner.result.id,{method:'PATCH',body:{reason:'E2E cleanup'},cookie:client})).response.status,200);
 const reconciliation=await request('/api/reconciliation',{cookie:owner});assert.equal(reconciliation.result.healthy,true);
-console.log('Real Pages Functions / D1 E2E passed: signed auth, permissions, durable receipt, concurrent booking, cancellation, reconciliation.');
+assert.equal((await request('/api/readiness')).response.status,200);
+if(process.env.CRM_E2E_JOBS_ORIGIN) {
+ const jobs=new URL(process.env.CRM_E2E_JOBS_ORIGIN);
+ assert.ok(['localhost','127.0.0.1'].includes(jobs.hostname),'automation QA must be local-only');
+ const joined=await request('/api/client/waitlist',{method:'POST',cookie:client,body:{serviceId:'qa-service',preferredDate:date}});
+ assert.equal(joined.response.status,201);
+ const offers=await Promise.all([1,2].map(()=>fetch(jobs.origin+'/waitlist',{method:'POST',signal:AbortSignal.timeout(20000)})));
+ assert.ok(offers.every(r=>r.ok),'both concurrent automation invocations finish');
+ const waiting=await request('/api/client/waitlist',{cookie:client});
+ assert.equal(waiting.result.items.length,1);const offer=waiting.result.items[0];
+ assert.equal(offer.status,'OFFERED');assert.equal(offer.branchId,'qa-branch');assert.ok(offer.holdId);
+ const accept={serviceId:offer.serviceId,branchId:offer.branchId,employeeId:offer.employeeId,startsAt:offer.startsAt,holdId:offer.holdId,idempotencyKey:randomUUID()};
+ const accepted=await request('/api/client/appointments',{method:'POST',cookie:client,body:accept});assert.equal(accepted.response.status,201);
+ const again=await request('/api/client/appointments',{method:'POST',cookie:client,body:accept});assert.equal(again.result.replayed,true);assert.equal(again.result.id,accepted.result.id);
+ assert.equal((await request('/api/client/appointments/'+accepted.result.id,{method:'PATCH',cookie:client,body:{reason:'QA cleanup'}})).response.status,200);
+ const explicit=await request('/api/client/waitlist',{method:'POST',cookie:client,body:{serviceId:'qa-service',branchId:'qa-a',preferredDate:date}});
+ assert.equal(explicit.response.status,201);
+ assert.equal((await fetch(jobs.origin+'/waitlist',{method:'POST',signal:AbortSignal.timeout(20000)})).status,200);
+ const noOffer=await request('/api/client/waitlist',{cookie:client});assert.equal(noOffer.result.items[0].status,'ACTIVE');assert.equal(noOffer.result.items[0].holdId,null);
+ assert.equal((await request('/api/client/waitlist',{method:'PATCH',cookie:client,body:{id:explicit.result.id,action:'cancel'}})).response.status,200);
+ console.log('Real D1 concurrent automation: one any-branch offer in B, atomic acceptance/replay, explicit A not broadened.');
+}
+console.log('Real Pages Functions / D1 E2E passed: signed auth, permissions, durable receipt, concurrent booking, cancellation, reconciliation, health/readiness.');

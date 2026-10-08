@@ -1,6 +1,7 @@
 import { TelegramApiError, telegramApi } from "./telegram-bot";
 import type { CrmEnv } from "./env";
 import { hasPermission, type Permission } from "../../src/lib/permissions";
+import { deliverableHold } from './offer-eligibility';
 
 type OutboxRow = { id: string; telegramId: string; templateKey: string; payloadJson: string; attempts: number; leaseToken: string };
 type Payload = Record<string, unknown>;
@@ -64,6 +65,14 @@ async function settle(env: CrmEnv, row: OutboxRow, payload: Payload, status: "SE
     env.DB.prepare("DELETE FROM mutation_guards WHERE id = ?").bind(guardId),
     ...campaignStatements(env, payload, status === "CANCELLED" ? "SKIPPED" : status, errorCode),
   ];
+  if (status==='CANCELLED' && typeof payload.holdId==='string' && typeof payload.clientId==='string') {
+    statements.push(
+      env.DB.prepare("UPDATE booking_holds SET status='EXPIRED' WHERE id=? AND client_id=? AND status='HELD'").bind(payload.holdId,payload.clientId),
+      env.DB.prepare(`UPDATE client_waitlist SET status='ACTIVE',retry_after=datetime('now','+1 minute')
+        WHERE id=(SELECT waitlist_id FROM booking_holds WHERE id=? AND client_id=?) AND status='OFFERED'
+        AND NOT EXISTS(SELECT 1 FROM booking_holds h WHERE h.waitlist_id=client_waitlist.id AND h.status='HELD')`).bind(payload.holdId,payload.clientId),
+    );
+  }
   if (typeof payload.notificationId === "string") statements.push(env.DB.prepare("UPDATE notifications SET status = ?, sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END, attempts = ? WHERE id = ? AND status = 'PENDING'").bind(status, status, row.attempts, payload.notificationId));
   statements.push(env.DB.prepare(`UPDATE message_outbox SET status = ?, last_error = ?, telegram_message_id = ?,
     sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END,
@@ -134,7 +143,7 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
         const recipient = await env.DB.prepare("SELECT u.id, u.client_id AS clientId FROM users u JOIN clients c ON c.id = u.client_id WHERE u.telegram_id = ? AND u.active = 1 AND u.notifications_allowed = 1 AND c.is_active = 1").bind(row.telegramId).first<{ id: string; clientId: string }>();
         let eligible = Boolean(recipient);
         if(typeof payload.clientId==='string') eligible=eligible && payload.clientId===recipient?.clientId;
-        if(typeof payload.holdId==='string') eligible=eligible && Boolean(await env.DB.prepare("SELECT id FROM booking_holds WHERE id=? AND client_id=? AND status='HELD' AND julianday(expires_at)>julianday('now')").bind(payload.holdId,recipient?.clientId ?? '').first());
+        if(typeof payload.holdId==='string') eligible=eligible && await deliverableHold(env.DB,payload.holdId,recipient?.clientId ?? '');
         if(typeof payload.followUpId==='string') eligible=eligible && Boolean(await env.DB.prepare("SELECT id FROM follow_ups WHERE id=? AND client_id=? AND status='OPEN' AND recommended_date=?").bind(payload.followUpId,recipient?.clientId ?? '',payload.recommendedDate).first());
         if (typeof payload.notificationId === "string") {
           const reminder = ["REMINDER_24H", "REMINDER_2H"].includes(row.templateKey);

@@ -2,6 +2,7 @@ import type { CrmEnv } from "../functions/_lib/env";
 import { enqueueDueReminders, processOutbox } from "../functions/_lib/notification-delivery";
 import { telegramApi } from "../functions/_lib/telegram-bot";
 import { APP_VERSION } from "../src/lib/release";
+import { privateService } from './private-service';
 
 async function configureBot(env: CrmEnv) {
   const key = "telegram-config-" + APP_VERSION;
@@ -30,36 +31,57 @@ export async function runNotifications(env: CrmEnv) {
     WHERE worker_runs.lease_expires_at IS NULL OR julianday(worker_runs.lease_expires_at) <= julianday('now')
     RETURNING worker_name`).bind(leaseToken).first();
   if (!claimed) return;
+  const deadline = Date.now()+90_000; // Reserve the remaining lease budget for two bounded bot API calls.
+  const ownsLease = async () => {
+    if (!await env.DB.prepare("SELECT worker_name FROM worker_runs WHERE worker_name='notifications' AND lease_token=? AND julianday(lease_expires_at)>julianday('now')").bind(leaseToken).first()) {
+      throw new Error('WORKER_LEASE_LOST');
+    }
+  };
   try {
     await enqueueDueReminders(env);
     if (env.JOBS) {
       let jobsFailed=false;
       for (const path of ['/schedule','/waitlist','/waitlist']) {
+        await ownsLease();
         try {
-          const response=await env.JOBS.fetch('https://internal'+path,{method:'POST'});
-          if(!response.ok) jobsFailed=true;
+          await privateService(env.JOBS,path,{method:'POST'},async response=>{
+            if(!response.ok) throw new Error('AUTOMATION_UNAVAILABLE');
+          },Math.max(1,Math.min(10_000,deadline-Date.now())));
         } catch {jobsFailed=true;}
       }
+      await ownsLease();
       await env.DB.prepare(`INSERT INTO worker_runs(worker_name,started_at,completed_at,status,error_code)
-        VALUES('automation',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?,?) ON CONFLICT(worker_name) DO UPDATE SET
+        SELECT 'automation',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?,?
+        WHERE EXISTS(SELECT 1 FROM worker_runs WHERE worker_name='notifications' AND lease_token=? AND julianday(lease_expires_at)>julianday('now'))
+        ON CONFLICT(worker_name) DO UPDATE SET
         started_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP,status=excluded.status,error_code=excluded.error_code`)
-        .bind(jobsFailed?'FAILED':'OK',jobsFailed?'AUTOMATION_UNAVAILABLE':null).run();
+        .bind(jobsFailed?'FAILED':'OK',jobsFailed?'AUTOMATION_UNAVAILABLE':null,leaseToken).run();
+    } else {
+      await env.DB.prepare(`INSERT INTO worker_runs(worker_name,started_at,completed_at,status,error_code)
+        SELECT 'automation',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'FAILED','AUTOMATION_UNAVAILABLE'
+        WHERE EXISTS(SELECT 1 FROM worker_runs WHERE worker_name='notifications' AND lease_token=? AND julianday(lease_expires_at)>julianday('now'))
+        ON CONFLICT(worker_name) DO UPDATE SET completed_at=CURRENT_TIMESTAMP,status='FAILED',error_code='AUTOMATION_UNAVAILABLE'`).bind(leaseToken).run();
     }
     if (env.DELIVERY) {
-      const deadline=Date.now()+90000;
       for(let pass=0;pass<8 && Date.now()<deadline;pass++) {
-        const response=await env.DELIVERY.fetch('https://internal/drain',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:env.TELEGRAM_BOT_TOKEN})});
-        if(!response.ok) throw new Error('Delivery service unavailable');
-        const result=await response.json() as {processed:number};
+        await ownsLease();
+        const result=await privateService(env.DELIVERY,'/drain',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:env.TELEGRAM_BOT_TOKEN})},async response=>{
+          if(!response.ok) throw new Error('DELIVERY_UNAVAILABLE');
+          const result=await response.json() as {processed:unknown};
+          if(!Number.isInteger(result.processed) || Number(result.processed)<0 || Number(result.processed)>3) throw new Error('INVALID_DELIVERY_RESPONSE');
+          return {processed:Number(result.processed)};
+        },Math.max(1,Math.min(40_000,deadline-Date.now())));
         if(!result.processed) break;
       }
     } else await processOutbox(env);
+    await ownsLease();
     // Bot menu configuration is independent from delivery and is retried next cron.
     try { await configureBot(env); } catch {
       await env.DB.prepare("INSERT INTO worker_runs(worker_name, started_at, completed_at, status, error_code) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'FAILED', 'BOT_CONFIG_UNAVAILABLE') ON CONFLICT(worker_name) DO UPDATE SET completed_at = CURRENT_TIMESTAMP, status = 'FAILED', error_code = 'BOT_CONFIG_UNAVAILABLE'")
         .bind("telegram-config-" + APP_VERSION).run();
       console.error(JSON.stringify({ event: "bot_configuration_deferred", code: "BOT_CONFIG_UNAVAILABLE" }));
     }
+    await ownsLease();
     await env.DB.batch([
       env.DB.prepare("UPDATE worker_runs SET completed_at = CURRENT_TIMESTAMP, status = 'OK', error_code = NULL, lease_token = NULL, lease_expires_at = NULL WHERE worker_name = 'notifications' AND lease_token = ?").bind(leaseToken),
       env.DB.prepare("DELETE FROM telegram_updates WHERE received_at < datetime('now', '-7 days')"),

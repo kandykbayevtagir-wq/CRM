@@ -2,6 +2,7 @@ import { findAvailableSlots } from './availability';
 import { localDate } from '../../src/lib/appointments/schedule';
 import type { CrmEnv } from './env';
 import { HttpError } from './security';
+import { activeBookingResources, calendarValues, eligibleCalendar, eligibleWaiter, validHold } from './offer-eligibility';
 
 export async function expireOffers(env: CrmEnv) {
   await env.DB.batch([
@@ -15,11 +16,7 @@ export async function expireOffers(env: CrmEnv) {
         AND a.client_id=client_waitlist.client_id AND a.status IN ('SCHEDULED','CONFIRMED')
         AND julianday(a.starts_at)>julianday('now','+'||(SELECT cancellation_window_hours FROM organization_settings WHERE id=1)||' hours')
         AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.appointment_id=a.id))`),
-    env.DB.prepare(`UPDATE booking_holds SET status='EXPIRED' WHERE status='HELD' AND
-      (julianday(expires_at)<=julianday('now') OR julianday(starts_at)<=julianday('now','+5 minutes')
-        OR NOT EXISTS(SELECT 1 FROM client_waitlist w JOIN clients c ON c.id=w.client_id WHERE w.id=waitlist_id AND w.status='OFFERED' AND c.is_active=1)
-        OR NOT EXISTS(SELECT 1 FROM services s JOIN branches b ON b.id=booking_holds.branch_id JOIN employees e ON e.id=booking_holds.employee_id
-          WHERE s.id=booking_holds.service_id AND s.is_active=1 AND b.is_active=1 AND e.is_active=1))`),
+    env.DB.prepare(`UPDATE booking_holds AS h SET status='EXPIRED' WHERE status='HELD' AND NOT (${validHold('h')})`),
     env.DB.prepare(`UPDATE client_waitlist SET status='ACTIVE',retry_after=datetime('now','+1 minute') WHERE status='OFFERED'
       AND NOT EXISTS(SELECT 1 FROM booking_holds h WHERE h.waitlist_id=client_waitlist.id AND h.status='HELD')`),
   ]);
@@ -44,8 +41,6 @@ export async function offerWaitlistSlot(env: CrmEnv) {
   if (!waiter) return;
   // Rotate requests with no matching slot instead of blocking the FIFO queue indefinitely.
   await env.DB.prepare("UPDATE client_waitlist SET retry_after=datetime('now','+5 minutes') WHERE id=? AND status='ACTIVE'").bind(waiter.id).run();
-  const branchId=waiter.branchId ?? (await env.DB.prepare('SELECT id FROM branches WHERE is_active=1 ORDER BY id LIMIT 1').first<{id:string}>())?.id;
-  if (!branchId) return;
   const settings=await env.DB.prepare('SELECT timezone FROM organization_settings WHERE id=1').first<{timezone:string}>();
   const timezone=settings?.timezone || 'Asia/Almaty';
   const today=localDate(new Date(),timezone);
@@ -55,26 +50,34 @@ export async function offerWaitlistSlot(env: CrmEnv) {
   const date=waiter.preferredDate || new Date(Date.parse(today+'T12:00:00Z')+offset*86400000).toISOString().slice(0,10);
   if (date<today) {await env.DB.prepare("UPDATE client_waitlist SET status='EXPIRED' WHERE id=? AND status='ACTIVE'").bind(waiter.id).run();return;}
   let slots;
-  try {slots=await findAvailableSlots(env.DB,{date,branchId,serviceId:waiter.serviceId,employeeId:waiter.employeeId || undefined});}
+  try {slots=await findAvailableSlots(env.DB,{date,branchId:waiter.branchId || undefined,serviceId:waiter.serviceId,employeeId:waiter.employeeId || undefined,
+    acceptSlot:s=>Date.parse(s.startsAt)>Date.now()+15*60000 && (!waiter.beforeAt || Date.parse(s.startsAt)<Date.parse(waiter.beforeAt))
+      && !(attempted.results ?? []).some(h=>h.startsAt===s.startsAt && h.employeeId===s.employeeId)});}
   catch(error) {
     // A resource may be archived after selecting the waiter. The next pass expires it.
     if(error instanceof HttpError && error.status===404) return;
     throw error;
   }
-  const slot=slots.find(s=>Date.parse(s.startsAt)>Date.now()+15*60000 && (!waiter.beforeAt || Date.parse(s.startsAt)<Date.parse(waiter.beforeAt))
-    && !(attempted.results ?? []).some(h=>h.startsAt===s.startsAt && h.employeeId===s.employeeId));
+  const slot=slots[0];
   if (!waiter.preferredDate) await env.DB.prepare('UPDATE client_waitlist SET scan_offset=? WHERE id=?').bind((offset+1)%14,waiter.id).run();
   if (!slot) return;
   const holdId=crypto.randomUUID(); const guard=crypto.randomUUID();
   try {
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM client_waitlist WHERE id=? AND status='ACTIVE')
-        AND EXISTS(SELECT 1 FROM services WHERE id=? AND is_active=1)
-        AND EXISTS(SELECT 1 FROM branches WHERE id=? AND is_active=1)
-        AND EXISTS(SELECT 1 FROM employees WHERE id=? AND is_active=1)`).bind(guard,waiter.id,waiter.serviceId,branchId,slot.employeeId),
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed)
+        WITH candidate AS (SELECT ? AS client_id,? AS service_id,? AS branch_id,? AS employee_id,
+          ? AS starts_at,? AS ends_at,? AS day,? AS start_time,? AS end_time)
+        SELECT ?, EXISTS(SELECT 1 FROM client_waitlist w CROSS JOIN candidate c WHERE w.id=? AND w.status='ACTIVE'
+          AND w.client_id=c.client_id AND w.service_id=c.service_id
+          AND (w.branch_id IS NULL OR w.branch_id=c.branch_id) AND (w.employee_id IS NULL OR w.employee_id=c.employee_id)
+          AND ${eligibleWaiter('w')} AND ${activeBookingResources('c.client_id','c.service_id','c.branch_id','c.employee_id')}
+          AND ${eligibleCalendar('c')}
+          AND EXISTS(SELECT 1 FROM users u WHERE u.client_id=w.client_id AND u.telegram_id=? AND u.active=1 AND u.notifications_allowed=1))`)
+        .bind(waiter.clientId,waiter.serviceId,slot.branchId,slot.employeeId,slot.startsAt,slot.endsAt,
+          ...calendarValues(slot.startsAt,slot.endsAt,timezone),guard,waiter.id,waiter.telegramId),
       env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(guard),
       env.DB.prepare(`INSERT INTO booking_holds(id,client_id,branch_id,employee_id,starts_at,ends_at,expires_at,service_id,waitlist_id,appointment_id)
-        VALUES(?,?,?,?,?,?,datetime('now','+10 minutes'),?,?,?)`).bind(holdId,waiter.clientId,branchId,slot.employeeId,slot.startsAt,slot.endsAt,waiter.serviceId,waiter.id,waiter.appointmentId),
+        VALUES(?,?,?,?,?,?,datetime('now','+10 minutes'),?,?,?)`).bind(holdId,waiter.clientId,slot.branchId,slot.employeeId,slot.startsAt,slot.endsAt,waiter.serviceId,waiter.id,waiter.appointmentId),
       env.DB.prepare("UPDATE client_waitlist SET status='OFFERED',offer_count=offer_count+1 WHERE id=?").bind(waiter.id),
       env.DB.prepare(`INSERT INTO message_outbox(id,event_key,telegram_id,template_key,payload_json) VALUES(?,?,?,'WAITLIST_OFFER',?)`)
         .bind(crypto.randomUUID(),'waitlist:'+holdId,waiter.telegramId,JSON.stringify({holdId,clientId:waiter.clientId,clientName:waiter.clientName,startsAt:slot.startsAt,timezone,service:(await env.DB.prepare('SELECT name FROM services WHERE id=?').bind(waiter.serviceId).first<{name:string}>())?.name || 'Приём',specialist:slot.employeeName,branch:slot.branchName,

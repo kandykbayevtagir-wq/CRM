@@ -6,6 +6,7 @@ import { HttpError } from "../../_lib/security";
 import { findAvailableSlots } from "../../_lib/availability";
 import { reservationStatements } from "../../_lib/booking";
 import { assertUnchanged } from "../../_lib/transaction";
+import { activeBookingResources, calendarValues, eligibleCalendar, eligibleWaiter, validHold } from '../../_lib/offer-eligibility';
 import { auditStatement } from "../../_lib/audit";
 import type { CrmEnv } from "../../_lib/env";
 import { badRequest, conflict, dateValue, json, newCheckInToken, newId, readJson, stringValue } from "../../_lib/http";
@@ -134,26 +135,42 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
     .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {
+    const resourceGuard = newId();
+    const resourceStatements = [
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed)
+        WITH candidate AS (SELECT ? AS client_id,? AS service_id,? AS branch_id,? AS employee_id,
+          ? AS starts_at,? AS ends_at,? AS day,? AS start_time,? AS end_time)
+        SELECT ?, EXISTS(SELECT 1 FROM candidate c WHERE ${activeBookingResources('c.client_id','c.service_id','c.branch_id','c.employee_id')}
+          AND ${eligibleCalendar('c')}
+          AND (? IS NULL OR EXISTS(SELECT 1 FROM client_waitlist w WHERE w.id=(SELECT waitlist_id FROM booking_holds WHERE id=?) AND ${eligibleWaiter('w')}))
+          AND (? IS NULL OR EXISTS(SELECT 1 FROM appointments a WHERE a.id=? AND a.client_id=c.client_id
+            AND a.status IN ('SCHEDULED','CONFIRMED')
+            AND julianday(a.starts_at)>julianday('now','+'||COALESCE((SELECT cancellation_window_hours FROM organization_settings WHERE id=1),2)||' hours')
+            AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.appointment_id=a.id))))`)
+        .bind(user.clientId,serviceId,branchId,employeeId,startsAt,slot.endsAt,...calendarValues(startsAt,slot.endsAt,timezone),
+          resourceGuard,holdId || null,holdId || null,appointmentId || null,appointmentId || null),
+      env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(resourceGuard),
+    ];
     const holdGuard = newId();
     const holdStatements = holdId ? [
-      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM booking_holds WHERE id=? AND client_id=? AND status='HELD' AND julianday(expires_at)>julianday('now'))`).bind(holdGuard,holdId,user.clientId),
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM booking_holds h WHERE h.id=? AND h.client_id=? AND ${validHold('h')})`).bind(holdGuard,holdId,user.clientId),
       env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(holdGuard),
       env.DB.prepare("UPDATE booking_holds SET status='CONVERTED' WHERE id=?").bind(holdId),
       env.DB.prepare("UPDATE client_waitlist SET status='BOOKED' WHERE id=(SELECT waitlist_id FROM booking_holds WHERE id=?)").bind(holdId),
     ] : [];
-    await env.DB.batch([...holdStatements, ...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
+    await env.DB.batch([...resourceStatements, ...holdStatements, ...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
       auditStatement(env.DB, user, "appointment", id, changed ? "RESCHEDULE" : "CREATE", existing, { startsAt, serviceId, branchId, employeeId }),
     ]);
   } catch (cause) {
     const databaseMessage = cause instanceof Error ? cause.message : "";
-    if (/mutation_precondition/.test(databaseMessage)) return conflict("Запись уже изменилась. Обновите список записей.");
     if (idempotencyKey) {
       const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1")
         .bind(idempotencyKey, user.id).first<{ appointmentId: string; requestHash: string; changed: number }>();
       if (previous && previous.requestHash !== requestHash) return conflict("Этот ключ уже использован для другой записи");
       if (previous) return json({ ok: true, id: previous.appointmentId, changed: previous.changed === 1, replayed: true });
     }
-    if (/unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(databaseMessage)) {
+    if (/mutation_precondition/.test(databaseMessage)) return conflict("Запись уже изменилась. Обновите список записей.");
+    if (/CRM_SLOT_UNAVAILABLE|unique|constraint|appointment_slot_reservations|idx_appointments_active_employee_start/i.test(databaseMessage)) {
       return json({ ok: false, error: "Это время только что заняли. Выберите другое окно.", code: "SLOT_UNAVAILABLE" }, 409);
     }
     return json({ ok: false, error: "Не удалось сохранить запись. Попробуйте ещё раз." }, 500);

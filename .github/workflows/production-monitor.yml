@@ -1,18 +1,29 @@
 name: Production health
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Offset from minute zero; GitHub may still delay or drop scheduled runs.
+    - cron: '2-57/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: production-health
+  cancel-in-progress: false
 jobs:
   health:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Check live CRM and background readiness
         run: node scripts/check-production.mjs
+      - name: Record trigger evidence
+        if: always()
+        env:
+          MONITOR_EVENT: ${{ github.event_name }}
+          MONITOR_SHA: ${{ github.sha }}
+        run: |
+          echo "Production monitor trigger: $MONITOR_EVENT; commit: $MONITOR_SHA; UTC: $(date -u +%FT%TZ)" >> "$GITHUB_STEP_SUMMARY"

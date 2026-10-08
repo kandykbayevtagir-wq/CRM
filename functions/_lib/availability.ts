@@ -16,11 +16,12 @@ export type AvailabilitySlot = {
 
 type AvailabilityParams = {
   date: string;
-  branchId: string;
+  branchId?: string;
   serviceId: string;
   employeeId?: string;
   excludeAppointmentId?: string;
   excludeHoldId?: string;
+  acceptSlot?: (slot: AvailabilitySlot) => boolean;
 };
 
 type TimeRange = { startsTime: string; endsTime: string; breakStartTime?: string | null; breakEndTime?: string | null };
@@ -53,29 +54,30 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
 
   const service = await db.prepare("SELECT id, price, duration_minutes AS durationMinutes FROM services WHERE id = ? AND is_active = 1").bind(params.serviceId).first<{ id: string; price: number; durationMinutes: number }>();
   if (!service) throw new HttpError(404, "SERVICE_NOT_FOUND", "Услуга не найдена");
-  const branch = await db.prepare("SELECT id, name FROM branches WHERE id = ? AND is_active = 1").bind(params.branchId).first<{ id: string; name: string }>();
-  if (!branch) throw new HttpError(404, "BRANCH_NOT_FOUND", "Филиал не найден");
+  if (params.branchId && !await db.prepare("SELECT id FROM branches WHERE id = ? AND is_active = 1").bind(params.branchId).first()) {
+    throw new HttpError(404, "BRANCH_NOT_FOUND", "Филиал не найден");
+  }
 
   const employeeQuery = `
-    SELECT e.id, e.full_name AS fullName, b.name AS branchName
+    SELECT e.id, e.full_name AS fullName, b.id AS branchId, b.name AS branchName
     FROM employees e INNER JOIN employee_branches eb ON eb.employee_id = e.id INNER JOIN branches b ON b.id = eb.branch_id
-    WHERE e.is_active = 1 AND eb.branch_id = ?
+    WHERE e.is_active = 1 AND b.is_active = 1 ${params.branchId ? 'AND eb.branch_id = ?' : ''}
       AND EXISTS (
         SELECT 1 FROM employee_services es
         WHERE es.employee_id = e.id AND es.service_id = ? AND es.active = 1
-          AND (es.branch_id IS NULL OR es.branch_id = ?)
+          AND (es.branch_id IS NULL OR es.branch_id = eb.branch_id)
       ) ${params.employeeId ? "AND e.id = ?" : ""}
-    ORDER BY e.full_name ASC
+    ORDER BY b.id, e.id
   `;
-  const employees = params.employeeId
-    ? await db.prepare(employeeQuery).bind(params.branchId, params.serviceId, params.branchId, params.employeeId).all<{ id: string; fullName: string; branchName: string }>()
-    : await db.prepare(employeeQuery).bind(params.branchId, params.serviceId, params.branchId).all<{ id: string; fullName: string; branchName: string }>();
+  const employees = await db.prepare(employeeQuery).bind(...(params.branchId ? [params.branchId] : []), params.serviceId,
+    ...(params.employeeId ? [params.employeeId] : [])).all<{ id: string; fullName: string; branchId: string; branchName: string }>();
   if (!employees.results?.length) return [];
 
   const timezone = String(settings?.timezone ?? "Asia/Almaty");
   const { from: dateStart, to: dateEnd } = localDayRange(params.date, timezone);
-  const employeeIds = employees.results.map((employee) => employee.id);
-  const placeholders = employeeIds.map(() => "?").join(",");
+  // One JSON bind avoids D1's parameter limit and does not multiply queries by branch count.
+  const employeeIds = [JSON.stringify([...new Set(employees.results.map(employee => employee.id))])];
+  const placeholders = 'SELECT value FROM json_each(?)';
   const [appointments, timeOff, schedules, closures, reservations, holds] = await Promise.all([
     db.prepare(`
       SELECT a.id, a.employee_id AS employeeId, strftime('%Y-%m-%dT%H:%M:%fZ', a.starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', a.ends_at) AS endsAt,
@@ -89,7 +91,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
     `).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ id: string; employeeId: string; startsAt: string; endsAt: string | null; durationMinutes: number }>(),
     db.prepare(`SELECT employee_id AS employeeId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM employee_time_off WHERE employee_id IN (${placeholders}) AND julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)`).bind(...employeeIds, dateEnd, dateStart).all<{ employeeId: string; startsAt: string; endsAt: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
-    db.prepare("SELECT branch_id AS branchId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
+    db.prepare(`SELECT branch_id AS branchId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM branch_closures WHERE ${params.branchId ? '(branch_id = ? OR branch_id IS NULL) AND' : ''} julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)`).bind(...(params.branchId ? [params.branchId] : []), dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, slot_start AS slotStart FROM appointment_slot_reservations WHERE employee_id IN (${placeholders}) AND julianday(slot_start) >= julianday(?) AND julianday(slot_start) < julianday(?) ${params.excludeAppointmentId ? "AND appointment_id <> ?" : ""}`).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ employeeId: string; slotStart: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM booking_holds
       WHERE employee_id IN (${placeholders}) AND status='HELD' AND julianday(expires_at)>julianday('now')
@@ -121,6 +123,11 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   const slots: AvailabilitySlot[] = [];
   const interval = Math.max(15, Number(settings?.slotInterval ?? 30));
   const duration = Math.max(15, Number(service.durationMinutes ?? 60));
+  const instants = new Map<number, string>();
+  const instant = (minute: number) => {
+    if (!instants.has(minute)) instants.set(minute, isoAt(params.date, minute, timezone));
+    return instants.get(minute)!;
+  };
 
   for (const employee of employees.results ?? []) {
     const range = schedulesByEmployee.get(employee.id);
@@ -130,13 +137,13 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
     const employeeAppointments = appointmentsByEmployee.get(employee.id) ?? [];
     const employeeTimeOff = timeOffByEmployee.get(employee.id) ?? [];
     for (let minute = start; minute + duration <= end; minute += interval) {
-      const startsAt = isoAt(params.date, minute, timezone);
-      const endsAt = isoAt(params.date, minute + duration, timezone);
+      const startsAt = instant(minute);
+      const endsAt = instant(minute + duration);
       const startMs = new Date(startsAt).getTime();
       const endMs = new Date(endsAt).getTime();
       if (startMs <= now + 5 * 60_000) continue;
       if ((holds.results ?? []).some(h=>h.employeeId===employee.id && Date.parse(h.startsAt)<endMs && Date.parse(h.endsAt)>startMs)) continue;
-      if ((closures.results ?? []).some((closure) => new Date(closure.startsAt).getTime() < endMs && new Date(closure.endsAt).getTime() > startMs)) continue;
+      if ((closures.results ?? []).some((closure) => (closure.branchId === null || closure.branchId === employee.branchId) && new Date(closure.startsAt).getTime() < endMs && new Date(closure.endsAt).getTime() > startMs)) continue;
       if (employeeTimeOff.some((item) => new Date(item.startsAt).getTime() < endMs && new Date(item.endsAt).getTime() > startMs)) continue;
       if (range.breakStartTime && range.breakEndTime) {
         const breakStart = isoAt(params.date, timeToMinutes(range.breakStartTime), timezone);
@@ -150,9 +157,11 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
       })) continue;
       const employeeReservations = reservationsByEmployee.get(employee.id);
       if (employeeReservations && reservationStarts(startsAt, endsAt).some((slotStart) => employeeReservations.has(slotStart))) continue;
-      slots.push({ startsAt, endsAt, employeeId: employee.id, employeeName: employee.fullName, branchId: params.branchId, branchName: employee.branchName, serviceId: service.id, price: Number(service.price || 0) });
+      const slot={ startsAt, endsAt, employeeId: employee.id, employeeName: employee.fullName, branchId: employee.branchId, branchName: employee.branchName, serviceId: service.id, price: Number(service.price || 0) };
+      if (!params.acceptSlot || params.acceptSlot(slot)) slots.push(slot);
     }
   }
 
-  return slots.sort((left, right) => left.startsAt.localeCompare(right.startsAt)).slice(0, 200);
+  return slots.sort((left, right) => left.startsAt.localeCompare(right.startsAt)
+    || left.branchId.localeCompare(right.branchId) || left.employeeId.localeCompare(right.employeeId)).slice(0, 200);
 }
