@@ -31,13 +31,15 @@ export async function enqueueDueReminders(env: CrmEnv) {
       JOIN users u ON u.client_id = c.id AND u.active = 1 AND u.notifications_allowed = 1
       LEFT JOIN employees e ON e.id = a.employee_id LEFT JOIN branches b ON b.id = a.branch_id
       CROSS JOIN organization_settings os
-      WHERE os.id = 1 AND n.status = 'PENDING' AND n.kind IN ('REMINDER_24H', 'REMINDER_2H')
+      WHERE os.id = 1 AND c.is_active = 1 AND n.status = 'PENDING' AND n.kind IN ('REMINDER_24H', 'REMINDER_2H')
+        AND NOT EXISTS(SELECT 1 FROM message_outbox mo WHERE mo.event_key = 'reminder:' || n.id)
         AND julianday(n.scheduled_at) <= julianday('now')
-        AND julianday(a.starts_at) > julianday('now') AND a.status IN ('SCHEDULED', 'CONFIRMED') LIMIT 100`),
+        AND julianday(a.starts_at) > julianday('now') AND a.status IN ('SCHEDULED', 'CONFIRMED')
+      ORDER BY julianday(n.scheduled_at), n.id LIMIT 100`),
     env.DB.prepare(`UPDATE notifications SET status = 'CANCELLED'
       WHERE status = 'PENDING' AND kind IN ('REMINDER_24H', 'REMINDER_2H')
       AND (NOT EXISTS (SELECT 1 FROM appointments a WHERE a.id = notifications.appointment_id AND a.status IN ('SCHEDULED', 'CONFIRMED') AND julianday(a.starts_at) > julianday('now'))
-        OR NOT EXISTS (SELECT 1 FROM users u WHERE u.client_id = notifications.client_id AND u.active = 1 AND u.notifications_allowed = 1))`),
+        OR NOT EXISTS (SELECT 1 FROM users u JOIN clients c ON c.id = u.client_id WHERE u.client_id = notifications.client_id AND u.active = 1 AND u.notifications_allowed = 1 AND c.is_active = 1))`),
   ]);
 }
 
@@ -72,9 +74,23 @@ async function settle(env: CrmEnv, row: OutboxRow, payload: Payload, status: "SE
 
 export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_TOKEN_MISSING");
-  await env.DB.prepare(`UPDATE message_outbox SET status = CASE WHEN attempts >= 5 THEN 'FAILED' ELSE 'PENDING' END,
+  // A worker crash at the final attempt must settle linked reminders/campaigns too.
+  const expired = await env.DB.prepare(`SELECT id FROM message_outbox WHERE status = 'PROCESSING' AND attempts >= 5
+    AND (julianday(lease_expires_at) <= julianday('now') OR (lease_expires_at IS NULL AND julianday(updated_at) < julianday('now', '-10 minutes'))) LIMIT 20`).all<{ id: string }>();
+  for (const candidate of expired.results ?? []) {
+    const row = await env.DB.prepare(`UPDATE message_outbox SET lease_token = ?, lease_expires_at = datetime('now', '+2 minutes')
+      WHERE id = ? AND status = 'PROCESSING' AND attempts >= 5
+        AND (julianday(lease_expires_at) <= julianday('now') OR (lease_expires_at IS NULL AND julianday(updated_at) < julianday('now', '-10 minutes')))
+      RETURNING id, telegram_id AS telegramId, template_key AS templateKey, payload_json AS payloadJson, attempts, lease_token AS leaseToken`)
+      .bind(crypto.randomUUID(), candidate.id).first<OutboxRow>();
+    if (!row) continue;
+    let payload: Payload = {};
+    try { const value: unknown = JSON.parse(row.payloadJson); if (value && typeof value === "object" && !Array.isArray(value)) payload = value as Payload; } catch { /* Invalid payload is still terminal. */ }
+    await settle(env, row, payload, "FAILED", "DELIVERY_LEASE_EXPIRED");
+  }
+  await env.DB.prepare(`UPDATE message_outbox SET status = 'PENDING',
     lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
-    WHERE status = 'PROCESSING' AND (julianday(lease_expires_at) <= julianday('now')
+    WHERE status = 'PROCESSING' AND attempts < 5 AND (julianday(lease_expires_at) <= julianday('now')
       OR (lease_expires_at IS NULL AND julianday(updated_at) < julianday('now', '-10 minutes')))`).run();
   const candidates = await env.DB.prepare(`SELECT id FROM message_outbox
     WHERE status = 'PENDING' AND attempts < 5 AND julianday(next_retry_at) <= julianday('now')
@@ -95,15 +111,20 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
       payload = JSON.parse(row.payloadJson) as Payload;
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new TelegramApiError(400, null, "Invalid payload");
       if (row.templateKey === "DIRECT" && typeof payload.userId === "string") {
-        const user = await env.DB.prepare("SELECT role, client_id AS clientId FROM users WHERE id = ? AND telegram_id = ? AND active = 1").bind(payload.userId, row.telegramId).first<{ role: string; clientId: string | null }>();
+        const user = await env.DB.prepare("SELECT role, client_id AS clientId FROM users WHERE id = ? AND telegram_id = ? AND active = 1 AND (role <> 'CLIENT' OR EXISTS(SELECT 1 FROM clients c WHERE c.id = users.client_id AND c.is_active = 1))").bind(payload.userId, row.telegramId).first<{ role: string; clientId: string | null }>();
         if (!user || (payload.clientId && payload.clientId !== user.clientId) || (typeof payload.requiredPermission === "string" && !hasPermission(user.role, payload.requiredPermission as Permission))) {
           await settle(env, row, payload, "CANCELLED", "ACCESS_REVOKED"); continue;
         }
       }
       if (row.templateKey !== "DIRECT") {
-        const recipient = await env.DB.prepare("SELECT id FROM users WHERE telegram_id = ? AND active = 1 AND notifications_allowed = 1").bind(row.telegramId).first();
+        const recipient = await env.DB.prepare("SELECT u.id, u.client_id AS clientId FROM users u JOIN clients c ON c.id = u.client_id WHERE u.telegram_id = ? AND u.active = 1 AND u.notifications_allowed = 1 AND c.is_active = 1").bind(row.telegramId).first<{ id: string; clientId: string }>();
         let eligible = Boolean(recipient);
-        if (typeof payload.notificationId === "string") eligible = eligible && Boolean(await env.DB.prepare("SELECT n.id FROM notifications n JOIN appointments a ON a.id = n.appointment_id WHERE n.id = ? AND n.status = 'PENDING' AND a.status IN ('SCHEDULED','CONFIRMED') AND julianday(a.starts_at) > julianday('now') AND julianday(a.starts_at) = julianday(?)").bind(payload.notificationId, payload.startsAt).first());
+        if (typeof payload.notificationId === "string") {
+          const reminder = ["REMINDER_24H", "REMINDER_2H"].includes(row.templateKey);
+          eligible = eligible && Boolean(await env.DB.prepare(`SELECT n.id FROM notifications n JOIN appointments a ON a.id = n.appointment_id WHERE n.id = ? AND n.client_id = ? AND n.status = 'PENDING'
+            ${reminder ? "AND a.status IN ('SCHEDULED','CONFIRMED') AND julianday(a.starts_at) > julianday('now') AND julianday(a.starts_at) = julianday(?)" : ""}`)
+            .bind(payload.notificationId, recipient?.clientId ?? "", ...(reminder ? [payload.startsAt] : [])).first());
+        }
         if (typeof payload.campaignId === "string") eligible = eligible && Boolean(await env.DB.prepare("SELECT cc.id FROM client_consents cc JOIN users u ON u.client_id = cc.client_id JOIN campaigns ca ON ca.id = ? WHERE u.telegram_id = ? AND cc.kind = 'MARKETING' AND cc.revoked_at IS NULL AND ca.status <> 'CANCELLED'").bind(payload.campaignId, row.telegramId).first());
         if (!eligible) { await settle(env, row, payload, "CANCELLED", "RECIPIENT_UNAVAILABLE"); continue; }
       }
@@ -119,7 +140,7 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
         text = renderNotification(template.body, payload);
       }
       if (!text || text.length > 4096) throw new TelegramApiError(400, null, "Invalid message length");
-      const replyMarkup = payload.replyMarkup ?? (typeof payload.notificationId === "string" && typeof payload.appointmentId === "string" ? {
+      const replyMarkup = payload.replyMarkup ?? (["REMINDER_24H", "REMINDER_2H"].includes(row.templateKey) && typeof payload.appointmentId === "string" ? {
         inline_keyboard: [[{ text: "Подтвердить визит", callback_data: `confirm:${payload.appointmentId}` }],
           [{ text: "Мои записи", web_app: { url: `${env.MINI_APP_URL || "https://podologymk-crm.pages.dev"}/client/appointments` } }]],
       } : undefined);

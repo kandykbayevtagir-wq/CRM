@@ -43,8 +43,9 @@ export function seed(sqlite: DatabaseSync) {
 export function seedVisit(sqlite: DatabaseSync, id = "visit", status = "SCHEDULED", starts = "2030-01-07T04:00:00.000Z", employee = "employee", client = "client") {
   const canonical = starts.includes("T") ? starts : starts.replace(" ", "T") + "Z";
   const ends = new Date(Date.parse(canonical) + 3600000).toISOString();
-  sqlite.prepare("INSERT INTO appointments(id,client_id,employee_id,branch_id,starts_at,ends_at,status,total_amount,check_in_token,notes) VALUES(?,?,?,'branch',?,?,?,10000,?,'Внутренняя заметка визита')").run(id,client,employee,starts,ends,status,"TOKEN" + id.toUpperCase().replace(/[^A-Z0-9]/g,""));
+  sqlite.prepare("INSERT INTO appointments(id,client_id,employee_id,branch_id,starts_at,ends_at,status,total_amount,check_in_token,notes) VALUES(?,?,?,'branch',?,?,?,10000,?,'Внутренняя заметка визита')").run(id,client,employee,starts,ends,status === "COMPLETED" ? "IN_PROGRESS" : status,"TOKEN" + id.toUpperCase().replace(/[^A-Z0-9]/g,""));
   sqlite.prepare("INSERT INTO appointment_services(appointment_id,service_id,price,duration_minutes,quantity) VALUES(?,'service',10000,60,1)").run(id);
+  if (status === "COMPLETED") sqlite.prepare("UPDATE appointments SET status = 'COMPLETED' WHERE id = ?").run(id);
 }
 
 export async function requestContext(db: D1Database, path: string, method = "GET", body?: Record<string, unknown>, userId = "owner", params: Record<string,string> = {}) {

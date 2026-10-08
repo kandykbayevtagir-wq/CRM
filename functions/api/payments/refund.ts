@@ -30,7 +30,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const occurredAt = zonedDateValue(body, "occurredAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   const adjustmentId = newId();
   try {
-    const results = await env.DB.batch([
+    await env.DB.batch([
       env.DB.prepare(`
         INSERT INTO payment_adjustments (id, payment_id, appointment_id, kind, amount, reason, occurred_at, created_by)
         SELECT ?, p.id, p.appointment_id, 'REFUND', ?, ?, ?, ?
@@ -48,7 +48,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
         SELECT ?, ?, 'payment', ?, 'REFUND', ?, ? WHERE EXISTS (SELECT 1 FROM payment_adjustments WHERE id = ?)`)
         .bind(newId(), user.id, paymentId, JSON.stringify({ amount: payment.amount, refunded: refunded?.value ?? 0 }), JSON.stringify({ refundAmount: amount, reason, adjustmentId }), adjustmentId),
     ]);
-    if (Number(results[0]?.meta.changes ?? 0) !== 1) return conflict("Возврат превышает актуальный остаток платежа");
+    if (!await env.DB.prepare("SELECT id FROM payment_adjustments WHERE id = ?").bind(adjustmentId).first()) return conflict("Возврат превышает актуальный остаток платежа");
   } catch (error) {
     if (/unique|constraint/i.test(error instanceof Error ? error.message : "")) {
       const replay = await env.DB.prepare("SELECT adjustment_id AS adjustmentId, request_hash AS requestHash FROM refund_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ adjustmentId: string; requestHash: string }>();

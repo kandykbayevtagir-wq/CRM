@@ -53,7 +53,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const dbMethod = method === "QR" ? "TRANSFER" : method;
   const note = method === "QR" ? `[QR] ${optionalString(body, "note", 500) ?? ""}`.trim() : optionalString(body, "note", 500);
   try {
-    const results = await env.DB.batch([
+    await env.DB.batch([
       // The balance check is part of the INSERT. The earlier read is only for
       // a friendly error; it must not be the concurrency guard.
       env.DB.prepare(`
@@ -74,7 +74,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
         SELECT ?, ?, 'payment', ?, 'CREATE', NULL, ? WHERE EXISTS (SELECT 1 FROM payments WHERE id = ?)`)
         .bind(newId(), user.id, paymentId, JSON.stringify({ appointmentId, amount, method, paidAt }), paymentId),
     ]);
-    if (Number(results[0]?.meta.changes ?? 0) !== 1) return conflict("Оплата превышает актуальный остаток или запись уже закрыта");
+    if (!await env.DB.prepare("SELECT id FROM payments WHERE id = ?").bind(paymentId).first()) return conflict("Оплата превышает актуальный остаток или запись уже закрыта");
   } catch (error) {
     if (/unique|constraint/i.test(error instanceof Error ? error.message : "")) {
       const replay = await env.DB.prepare("SELECT payment_id AS paymentId, request_hash AS requestHash FROM payment_idempotency_keys WHERE idempotency_key = ? AND user_id = ? LIMIT 1").bind(idempotencyKey, user.id).first<{ paymentId: string; requestHash: string }>();

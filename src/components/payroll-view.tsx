@@ -10,6 +10,7 @@ import { Amount, Button, PageHeader, SectionCard, StatusPill } from "@/component
 import { dateValueInZone, formatCurrency, formatDate, parseDate, plural } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 import { useCan } from "@/lib/current-user";
+import { useOperationKey } from "@/lib/use-operation-key";
 
 type PayrollPeriod = { id: string; periodStart: string; periodEnd: string; status: string; totalAmount: number; closedAt: string | null };
 type PayrollPayment = { paymentId: string; appointmentId: string; paidAt: string; clientName: string; amount: number; refundedAmount: number };
@@ -41,6 +42,7 @@ function lineDetails(line: PayrollLine): { payments: PayrollPayment[]; adjustmen
 }
 
 export function PayrollView() {
+  const adjustmentKey = useOperationKey();
   const { data, loading, error, reload } = useApi<PayrollResponse>("/api/payroll");
   const canWrite = useCan("payroll.write");
   const canExport = useCan("exports.read");
@@ -92,7 +94,9 @@ export function PayrollView() {
     setFormError(null);
     setSaving(true);
     try {
-      await apiFetch("/api/payroll/adjustment", { method: "POST", body: { ...values, periodId: selected.id, employeeId: adjustmentOpen.employeeId } });
+      const body = { ...values, periodId: selected.id, employeeId: adjustmentOpen.employeeId };
+      await apiFetch("/api/payroll/adjustment", { method: "POST", body: { ...body, idempotencyKey: adjustmentKey.get(body) } });
+      adjustmentKey.reset();
       setMessage({ tone: "success", text: `Корректировка для ${adjustmentOpen.employeeName} добавлена. Нажмите «Рассчитать», чтобы обновить итоги.` });
       setAdjustmentOpen(null);
       dispatchCrmEvent("crm:data-changed");

@@ -1,5 +1,5 @@
 // Browser smoke check for the static export: desktop + mobile, mocked API, no runtime errors, no horizontal overflow.
-// Usage: serve `out/` (e.g. `npx wrangler pages dev out` or any static server) and run `CRM_PREVIEW_ORIGIN=http://localhost:8788 npm run qa:ui`.
+// Usage: node scripts/serve-export.mjs, then CRM_PREVIEW_ORIGIN=http://127.0.0.1:8788 npm run qa:ui.
 // Optional: PLAYWRIGHT_CHANNEL=chrome to use an installed Chrome, PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome for a custom binary.
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
@@ -110,6 +110,26 @@ try {
     await page.getByRole("dialog").getByText("Убрать услугу в архив?").waitFor();
     await page.getByRole("button", { name: "Отмена", exact: true }).click();
     await page.getByRole("dialog").waitFor({ state: "detached" });
+    // An ambiguous network failure must reuse the same financial operation key.
+    const expenseWrites = [];
+    await page.route("**/api/finance", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      expenseWrites.push(route.request().postDataJSON());
+      if (expenseWrites.length === 1) return route.abort("failed");
+      return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ ok: true, id: "expense", replayed: true }) });
+    });
+    await page.goto(base + "/finance");
+    await page.getByRole("button", { name: "Добавить расход", exact: true }).click();
+    await page.locator('#expense-form input[name="title"]').fill("Тест восстановления");
+    await page.locator('#expense-form input[name="amount"]').fill("1000");
+    await page.getByRole("button", { name: "Сохранить операцию", exact: true }).click();
+    await page.getByText("Не удалось подключиться. Проверьте интернет и попробуйте ещё раз.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Сохранить операцию", exact: true }).click();
+    await page.getByText("Операция добавлена в журнал", { exact: true }).waitFor();
+    assert.equal(expenseWrites.length, 2);
+    assert.ok(expenseWrites[0].idempotencyKey);
+    assert.equal(expenseWrites[0].idempotencyKey, expenseWrites[1].idempotencyKey);
+    await noOverflow(page, "expense network retry @ " + viewport.width);
     assert.deepEqual(errors, []);
     await context.close();
     console.log("Staff UI verified: " + viewport.width + "px; " + staffPages.length + " pages, payment, booking and archive dialogs; no runtime errors or overflow");
@@ -156,6 +176,19 @@ try {
     await page.getByRole("button", { name: /Подологическая обработка/ }).click();
     await page.getByRole("button", { name: /Центр/ }).click();
     await page.locator(".slot-button").first().click();
+    await page.locator(".slot-button-selected").waitFor();
+    await page.locator(".slot-button-selected").hover();
+    // eslint-disable-next-line no-undef
+    await page.waitForFunction(() => getComputedStyle(document.querySelector(".slot-button-selected")).color === "rgb(255, 255, 255)");
+    const selectedColors = await page.locator(".slot-button-selected").evaluate((element) => {
+      // eslint-disable-next-line no-undef
+      const styles = getComputedStyle(element);
+      return { color: styles.color, background: styles.backgroundColor };
+    });
+    assert.equal(selectedColors.color, "rgb(255, 255, 255)");
+    assert.notEqual(selectedColors.background, "rgb(240, 237, 255)");
+    // eslint-disable-next-line no-undef
+    await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({ path: `${shots}/client-book-${viewport.width}.png`, fullPage: true });
     await noOverflow(page, "/client/book @ " + viewport.width);
     await page.getByRole("button", { name: "Подтвердить запись", exact: true }).click();

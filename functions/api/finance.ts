@@ -3,7 +3,8 @@ import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_l
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, boundedString, escapeLike, json, LIKE_ESCAPE, newId, optionalString, readJson, stringValue } from "../_lib/http";
 import { isoColumn, normalizeIso, organizationTimezone, zonedDateValue } from "../_lib/dates";
-import { nonNegativeNumber } from "../_lib/validation";
+import { nonNegativeMoney } from "../_lib/validation";
+import { mutationReceipt } from "../_lib/mutation-receipt";
 
 const categories = new Set(["RENT", "UTILITIES", "SALARY", "SUPPLIES", "MARKETING", "TAX", "EQUIPMENT", "OTHER"]);
 
@@ -39,10 +40,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "finance.write")) return forbidden();
   const body = await readJson(request);
+  const receipt = await mutationReceipt(env.DB, user.id, "expense:create", body);
+  if (receipt.replay) return receipt.replay;
   const title = boundedString(body, "title", 200);
   const categoryValue = stringValue(body, "category", "OTHER").toUpperCase();
   const category = categories.has(categoryValue) ? categoryValue : "OTHER";
-  const amount = nonNegativeNumber(body.amount, "Сумма");
+  const amount = nonNegativeMoney(body.amount, "Сумма");
   const occurredAt = zonedDateValue(body, "occurredAt", await organizationTimezone(env.DB)) || new Date().toISOString();
   const branchId = optionalString(body, "branchId") || null;
   if (branchId && !await env.DB.prepare("SELECT id FROM branches WHERE id = ? AND is_active = 1").bind(branchId).first()) return badRequest("Филиал не найден");
@@ -50,12 +53,11 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const status = stringValue(body, "status", "PAID").toUpperCase() === "PLANNED" ? "PLANNED" : "PAID";
   const id = newId();
   const ledgerId = newId();
-  await env.DB.batch([
+  return receipt.commit([
     env.DB.prepare("INSERT INTO expenses (id, title, category, branch_id, amount, occurred_at, status, description, created_by, ledger_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .bind(id, title, category, branchId, amount, occurredAt, status, optionalString(body, "description", 1000), user.id, ledgerId),
     env.DB.prepare("INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, expense_id, description, created_by) VALUES (?, 'EXPENSE', 'EXPENSE', ?, ?, ?, ?, ?, ?, ?, ?)")
       .bind(ledgerId, category, amount, status === "PAID" ? "POSTED" : "PLANNED", occurredAt, branchId, id, title, user.id),
     auditStatement(env.DB, user, "expense", id, "CREATE", null, { title, category, amount, status }),
-  ]);
-  return json({ ok: true, id }, 201);
+  ], { ok: true, id });
 };

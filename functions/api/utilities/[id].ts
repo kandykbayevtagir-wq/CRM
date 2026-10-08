@@ -4,6 +4,7 @@ import type { CrmEnv } from "../../_lib/env";
 import { badRequest, json, notFound, optionalString, readJson, stringValue } from "../../_lib/http";
 import { organizationTimezone, zonedDateValue } from "../../_lib/dates";
 import { utilityValues } from "../../_lib/utility";
+import { assertUnchanged } from "../../_lib/transaction";
 
 export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
   const user = await getSessionUser(request, env.DB);
@@ -25,6 +26,6 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   if (ledgerId) statements.push(env.DB.prepare("INSERT OR IGNORE INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, utility_payment_id, description, created_by) VALUES (?, 'EXPENSE', 'UTILITIES', 'UTILITIES', ?, 'POSTED', ?, ?, ?, ?, ?)").bind(ledgerId, values.amount, paidAt ?? new Date().toISOString(), existing.branch_id, id, String(existing.kind ?? "OTHER"), user.id), env.DB.prepare("UPDATE financial_transactions SET amount = ?, status = ?, occurred_at = ?, description = ? WHERE utility_payment_id = ? AND kind = 'UTILITIES'").bind(values.amount, status === "PAID" ? "POSTED" : "PLANNED", paidAt ?? existing.due_date, stringValue(body, "kind", String(existing.kind ?? "OTHER")), id));
   else statements.push(env.DB.prepare("UPDATE financial_transactions SET status = 'VOIDED' WHERE utility_payment_id = ? AND kind = 'UTILITIES'").bind(id));
   statements.push(auditStatement(env.DB, user, "utility_payment", id, "UPDATE", { amount: existing.amount, consumption: existing.consumption }, { amount: values.amount, consumption: values.consumption, status }));
-  await env.DB.batch(statements);
+  await env.DB.batch([...assertUnchanged(env.DB, "utility_payments", String(id), Number(existing.revision)), ...statements]);
   return json({ ok: true, consumption: values.consumption, amount: values.amount });
 };

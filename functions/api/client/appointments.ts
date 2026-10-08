@@ -113,12 +113,12 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   ].filter((reminder) => reminder.time.getTime() > Date.now());
   const notificationStatements: D1PreparedStatement[] = [
     env.DB.prepare("UPDATE notifications SET status = 'CANCELLED' WHERE appointment_id = ? AND status = 'PENDING'").bind(id),
-    env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, status, scheduled_at, sent_at, payload_json) VALUES (?, ?, ?, ?, ?, 'SENT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)")
+    env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, status, scheduled_at, sent_at, payload_json) VALUES (?, ?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP, NULL, ?)")
       .bind(notificationId, user.id, user.clientId, id, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ startsAt })),
     ...reminderTimes.map((reminder) => env.DB.prepare("INSERT INTO notifications (id, user_id, client_id, appointment_id, kind, scheduled_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(newId(), user.id, user.clientId, id, reminder.kind, reminder.time.toISOString(), JSON.stringify({ startsAt }))),
     env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, ?, ?)")
-      .bind(newId(), `appointment:${id}:${changed ? `changed:${Number(existing?.revision ?? 0) + 1}` : "confirmed"}`, user.telegramId, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ clientName: client.fullName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: timezone }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: timezone }).format(new Date(startsAt)), specialist: employee.fullName, service: service.name, branch: branch.name })),
+      .bind(newId(), `appointment:${id}:${changed ? `changed:${Number(existing?.revision ?? 0) + 1}` : "confirmed"}`, user.telegramId, changed ? "BOOKING_CHANGED" : "BOOKING_CONFIRMED", JSON.stringify({ notificationId, appointmentId: id, clientName: client.fullName, date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeZone: timezone }).format(new Date(startsAt)), time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short", timeZone: timezone }).format(new Date(startsAt)), specialist: employee.fullName, service: service.name, branch: branch.name })),
   ];
   const reservationChanges: D1PreparedStatement[] = [
     env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(id),

@@ -2,7 +2,8 @@ import { getSessionUser, forbidden, hasCrmPermission, unauthorized } from "../_l
 import { auditStatement } from "../_lib/audit";
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, notFound, readJson, stringValue } from "../_lib/http";
-import { isoColumn } from "../_lib/dates";
+import { isoColumn, normalizeIso } from "../_lib/dates";
+import { APP_VERSION } from "../../src/lib/release";
 import { localDate, localDayRange } from "../../src/lib/appointments/schedule";
 import { processOutbox } from "../_lib/notification-delivery";
 
@@ -18,7 +19,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0,10) !== date) return badRequest("Некорректная дата");
   const { from, to } = localDayRange(date, timezone);
   const branchId = params.get("branchId") || "";
-  const [appointments, queue, failures, worker, obligations, waitlist] = await Promise.all([
+  const [appointments, queue, failures, worker, obligations, waitlist, botConfiguration] = await Promise.all([
     env.DB.prepare(`SELECT a.id, a.revision, ${isoColumn("a.starts_at")} AS startsAt, ${isoColumn("a.ends_at")} AS endsAt, a.status, a.total_amount AS amount,
       a.client_id AS clientId, c.full_name AS clientName, c.phone AS clientPhone, e.full_name AS employeeName, b.name AS branchName,
       (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName,
@@ -40,9 +41,13 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
       LEFT JOIN services s ON s.id = w.service_id LEFT JOIN branches b ON b.id = w.branch_id
       WHERE w.status IN ('ACTIVE','OFFERED') ${branchId ? "AND (w.branch_id = ? OR w.branch_id IS NULL)" : ""}
       ORDER BY w.created_at, w.id LIMIT 30`).bind(...(branchId ? [branchId] : [])).all(),
+    env.DB.prepare("SELECT status, completed_at AS completedAt, error_code AS errorCode FROM worker_runs WHERE worker_name = ?")
+      .bind("telegram-config-" + APP_VERSION).first(),
   ]);
+  const workerCompletedAt = Date.parse(normalizeIso(worker?.completedAt));
   return json({ ok: true, date, timezone, items: appointments.results ?? [], queue: queue.results ?? [],
-    failures: failures.results ?? [], waitlist: waitlist.results ?? [], worker, overdueBalances: obligations, workerStale: worker?.status !== "OK" || !worker?.completedAt || Date.now() - Date.parse(worker.completedAt.replace(" ", "T") + (worker.completedAt.endsWith("Z") ? "" : "Z")) > 15 * 60000 });
+    failures: failures.results ?? [], waitlist: waitlist.results ?? [], worker, botConfiguration, overdueBalances: obligations,
+    workerStale: !["OK", "RUNNING"].includes(worker?.status ?? "") || !Number.isFinite(workerCompletedAt) || Date.now() - workerCompletedAt > 15 * 60000 });
 };
 
 export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
@@ -66,13 +71,24 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
     return json({ok:true});
   }
   const id = stringValue(body, "messageId");
-  const row = await env.DB.prepare("SELECT event_key AS eventKey FROM message_outbox WHERE id = ? AND status = 'FAILED'").bind(id).first<{ eventKey: string }>();
+  const row = await env.DB.prepare("SELECT event_key AS eventKey, payload_json AS payloadJson FROM message_outbox WHERE id = ? AND status = 'FAILED'").bind(id).first<{ eventKey: string; payloadJson: string }>();
   if (!row) return notFound("Сообщение уже обработано или не найдено");
+  let payload: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(row.payloadJson);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return badRequest("Повреждённое сообщение нельзя отправить повторно");
+    payload = value as Record<string, unknown>;
+  } catch { return badRequest("Повреждённое сообщение нельзя отправить повторно"); }
   const guardId = newId();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO mutation_guards(id, passed) SELECT ?, EXISTS(SELECT 1 FROM message_outbox WHERE id = ? AND status = 'FAILED')").bind(guardId, id),
     env.DB.prepare("DELETE FROM mutation_guards WHERE id = ?").bind(guardId),
     env.DB.prepare("UPDATE message_outbox SET status = 'PENDING', attempts = 0, next_retry_at = CURRENT_TIMESTAMP, lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(id),
+    ...(typeof payload.notificationId === "string" ? [env.DB.prepare("UPDATE notifications SET status = 'PENDING', attempts = 0 WHERE id = ? AND status = 'FAILED'").bind(payload.notificationId)] : []),
+    ...(typeof payload.campaignId === "string" && typeof payload.clientId === "string" ? [
+      env.DB.prepare("UPDATE campaign_recipients SET status = 'PENDING', last_error = NULL WHERE campaign_id = ? AND client_id = ? AND status = 'FAILED'").bind(payload.campaignId, payload.clientId),
+      env.DB.prepare("UPDATE campaigns SET status = 'PROCESSING', error_count = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'FAILED'), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'CANCELLED'").bind(payload.campaignId, payload.campaignId),
+    ] : []),
     auditStatement(env.DB, user, "message_outbox", id, "RETRY", { status: "FAILED" }, { status: "PENDING" }),
   ]);
   context.waitUntil(processOutbox(env, row.eventKey).catch(() => console.error(JSON.stringify({ event: "manual_delivery_deferred", messageId: id }))));

@@ -79,6 +79,7 @@ export function TelegramMiniApp() {
               headers: { "content-type": "application/json" },
               credentials: "include",
               cache: "no-store",
+              signal: AbortSignal.timeout(10_000),
               body: JSON.stringify({ initData }),
             });
             if (response.ok) {
@@ -86,9 +87,8 @@ export function TelegramMiniApp() {
               return;
             }
             if (response.status >= 400 && response.status < 500) return;
-          } catch {
-            if (attempt < 2) await wait(500 * (attempt + 1));
-          }
+          } catch { /* Retry transient network failures with the same signed init data. */ }
+          if (attempt < 2 && !cancelled) await wait(500 * (attempt + 1));
         }
       } finally {
         authInFlight = false;

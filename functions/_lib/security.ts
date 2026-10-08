@@ -19,6 +19,7 @@ export function errorResponse(error: unknown, requestId: string) {
   if (/CRM_SLOT_UNAVAILABLE/.test(message)) return json({ ok: false, code: "SLOT_UNAVAILABLE", error: "Это время уже занято. Выберите другое окно.", requestId }, 409);
   if (/CRM_VISIT_CLOSED/.test(message)) return json({ ok: false, code: "VISIT_CLOSED", error: "Завершённый приём зафиксирован. Используйте возврат или отдельную корректировку.", requestId }, 409);
   if (/CRM_INVALID_MONEY/.test(message)) return json({ ok: false, code: "INVALID_MONEY", error: "Укажите положительную сумму с точностью до тиына.", requestId }, 400);
+  if (/CRM_LEDGER_IMMUTABLE/.test(message)) return json({ ok: false, code: "LEDGER_IMMUTABLE", error: "Проведённая операция зафиксирована. Используйте возврат или новую корректировку.", requestId }, 409);
   if (/CRM_STALE_WRITE|mutation_precondition/i.test(message)) return json({ ok: false, code: "STALE_WRITE", error: "Данные уже изменились. Обновите экран и повторите действие.", requestId }, 409);
   if (/CRM_PAYROLL_CLOSED/i.test(message)) return json({ ok: false, code: "PAYROLL_CLOSED", error: "Закрытый расчёт нельзя изменять. Добавьте корректировку в открытом периоде.", requestId }, 409);
   if (/CRM_INSUFFICIENT_STOCK/i.test(message)) return json({ ok: false, code: "INSUFFICIENT_STOCK", error: "Остаток изменился: материала недостаточно.", requestId }, 409);

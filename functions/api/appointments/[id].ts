@@ -48,20 +48,22 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   if (!Number.isFinite(Date.parse(incomingDate)) || !Number.isFinite(Date.parse(incomingEnds)) || Date.parse(incomingEnds) <= Date.parse(incomingDate)) return badRequest("Некорректный интервал записи");
   if (user.role === "SPECIALIST" && employeeId !== ownEmployee?.id) return forbidden("Специалист не может переназначить запись другому сотруднику");
 
-  const employee = await env.DB.prepare("SELECT e.id FROM employees e WHERE e.id = ? AND e.is_active = 1 AND EXISTS (SELECT 1 FROM employee_branches eb WHERE eb.employee_id = e.id AND eb.branch_id = ?)").bind(employeeId, branchId).first();
-  if (!employee) return badRequest("Специалист не работает в выбранном филиале");
-  const serviceIds = await env.DB.prepare("SELECT service_id AS serviceId FROM appointment_services WHERE appointment_id = ?").bind(appointmentId).all<{ serviceId: string }>();
-  const serviceIdsList = (serviceIds.results ?? []).map((row) => row.serviceId);
-  if (serviceIdsList.length) {
-    const eligible = await env.DB.prepare(`
-      SELECT COUNT(DISTINCT es.service_id) AS count
-      FROM employee_services es
-      WHERE es.employee_id = ? AND es.active = 1 AND es.service_id IN (${serviceIdsList.map(() => "?").join(",")})
-        AND (es.branch_id IS NULL OR es.branch_id = ?)
-    `).bind(employeeId, ...serviceIdsList, branchId).first<{ count: number }>();
-    if (Number(eligible?.count ?? 0) !== serviceIdsList.length) return badRequest("Специалист не оказывает одну из услуг в выбранном филиале");
+  const moved = Date.parse(incomingDate) !== previousStarts || (Number.isFinite(previousEnds) && Date.parse(incomingEnds) !== previousEnds) || employeeId !== String(existing.employee_id ?? "") || branchId !== String(existing.branch_id ?? "");
+  if (moved) {
+    const employee = await env.DB.prepare("SELECT e.id FROM employees e WHERE e.id = ? AND e.is_active = 1 AND EXISTS (SELECT 1 FROM employee_branches eb WHERE eb.employee_id = e.id AND eb.branch_id = ?)").bind(employeeId, branchId).first();
+    if (!employee) return badRequest("Специалист не работает в выбранном филиале");
+    const serviceIds = await env.DB.prepare("SELECT service_id AS serviceId FROM appointment_services WHERE appointment_id = ?").bind(appointmentId).all<{ serviceId: string }>();
+    const serviceIdsList = (serviceIds.results ?? []).map((row) => row.serviceId);
+    if (serviceIdsList.length) {
+      const eligible = await env.DB.prepare(`
+        SELECT COUNT(DISTINCT es.service_id) AS count
+        FROM employee_services es
+        WHERE es.employee_id = ? AND es.active = 1 AND es.service_id IN (${serviceIdsList.map(() => "?").join(",")})
+          AND (es.branch_id IS NULL OR es.branch_id = ?)
+      `).bind(employeeId, ...serviceIdsList, branchId).first<{ count: number }>();
+      if (Number(eligible?.count ?? 0) !== serviceIdsList.length) return badRequest("Специалист не оказывает одну из услуг в выбранном филиале");
+    }
   }
-  const moved = Date.parse(incomingDate) !== previousStarts || (Number.isFinite(previousEnds) && Date.parse(incomingEnds) !== previousEnds) || employeeId !== existing.employee_id || branchId !== existing.branch_id;
   if (moved && previousStatus === "COMPLETED") return badRequest("Время и специалист завершённого приёма зафиксированы");
   if (moved) {
     const scheduleError = await scheduleConflict(env.DB, employeeId, branchId, incomingDate, incomingEnds);
@@ -76,7 +78,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   }
   // Unchanged rows keep their stored timestamp text so the terminal-immutability trigger sees identical values.
   const storedStarts = moved ? incomingDate : String(existing.starts_at ?? incomingDate);
-  const storedEnds = moved ? incomingEnds : (existing.ends_at === null || existing.ends_at === undefined ? (previousStatus === "COMPLETED" ? null : incomingEnds) : String(existing.ends_at));
+  const storedEnds = moved ? incomingEnds : (existing.ends_at === null || existing.ends_at === undefined ? null : String(existing.ends_at));
 
   const cancelReason = requestedStatus === "CANCELLED" || requestedStatus === "NO_SHOW"
     ? ((optionalString(body, "cancelReason", 500) ?? String(existing.cancel_reason ?? "")) || "Без причины")
@@ -84,11 +86,11 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   const statements: D1PreparedStatement[] = [
     ...assertUnchanged(env.DB, "appointments", appointmentId, Number(existing.revision)),
     env.DB.prepare(`UPDATE appointments SET starts_at = ?, ends_at = ?, employee_id = ?, branch_id = ?, status = ?, notes = ?, cancel_reason = ?, cancelled_at = CASE WHEN ? IN ('CANCELLED', 'NO_SHOW') THEN COALESCE(cancelled_at, CURRENT_TIMESTAMP) ELSE NULL END, confirmed_at = CASE WHEN ? = 'CONFIRMED' THEN COALESCE(confirmed_at, CURRENT_TIMESTAMP) ELSE confirmed_at END, changed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(storedStarts, storedEnds, employeeId, branchId, requestedStatus, body.notes === null ? null : optionalString(body, "notes", 2000) ?? existing.notes ?? null, cancelReason, requestedStatus, requestedStatus, user.id, appointmentId),
+      .bind(storedStarts, storedEnds, moved ? employeeId : existing.employee_id ?? null, moved ? branchId : existing.branch_id ?? null, requestedStatus, body.notes === null ? null : optionalString(body, "notes", 2000) ?? existing.notes ?? null, cancelReason, requestedStatus, requestedStatus, user.id, appointmentId),
     env.DB.prepare("INSERT INTO appointment_status_history (id, appointment_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, ?, ?, ?)").bind(newId(), appointmentId, previousStatus, requestedStatus, user.id, cancelReason),
     auditStatement(env.DB, user, "appointment", appointmentId, "UPDATE", { status: previousStatus, startsAt: existing.starts_at, endsAt: existing.ends_at }, { status: requestedStatus, startsAt: incomingDate, endsAt: incomingEnds, cancelReason }),
-    env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(appointmentId),
   ];
+  if (moved || ["CANCELLED", "NO_SHOW"].includes(requestedStatus)) statements.push(env.DB.prepare("DELETE FROM appointment_slot_reservations WHERE appointment_id = ?").bind(appointmentId));
   const shouldNotifyClient = previousStatus !== requestedStatus && ["COMPLETED", "CANCELLED", "NO_SHOW"].includes(requestedStatus);
   const clientRecipient = shouldNotifyClient ? await env.DB.prepare(`
     SELECT u.telegram_id AS telegramId, c.full_name AS clientName, e.full_name AS specialist, b.name AS branch,
@@ -126,7 +128,7 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
     statements.push(env.DB.prepare("UPDATE follow_ups SET status = 'DONE', completed_at = CURRENT_TIMESTAMP, completed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE client_id = ? AND status = 'OPEN'").bind(user.id, String(existing.client_id ?? "")));
     statements.push(env.DB.prepare("INSERT INTO follow_ups (id, client_id, appointment_id, recommended_date, interval_days, assigned_to, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(newId(), String(existing.client_id ?? ""), appointmentId, recommendedDate, Number.isFinite(followUpDaysValue) && followUpDaysValue > 0 ? followUpDaysValue : null, user.id, user.id));
   }
-  if (!['CANCELLED', 'NO_SHOW'].includes(requestedStatus)) statements.push(...reservationStatements(env.DB, appointmentId, employeeId, incomingDate, incomingEnds));
+  if (moved && !['CANCELLED', 'NO_SHOW'].includes(requestedStatus)) statements.push(...reservationStatements(env.DB, appointmentId, employeeId, incomingDate, incomingEnds));
   try {
     await env.DB.batch(statements);
   } catch (cause) {

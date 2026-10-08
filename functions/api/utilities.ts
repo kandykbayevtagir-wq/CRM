@@ -4,6 +4,7 @@ import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
 import { isoColumn, organizationTimezone, zonedDateValue } from "../_lib/dates";
 import { utilityValues } from "../_lib/utility";
+import { mutationReceipt } from "../_lib/mutation-receipt";
 
 const statuses = new Set(["PLANNED", "DUE", "PAID", "OVERDUE"]);
 
@@ -21,6 +22,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "finance.write")) return forbidden();
   const body = await readJson(request);
+  const receipt = await mutationReceipt(env.DB, user.id, "utility:create", body);
+  if (receipt.replay) return receipt.replay;
   const timezone = await organizationTimezone(env.DB);
   const branchId = stringValue(body, "branchId");
   const kind = stringValue(body, "kind", "OTHER").slice(0, 60);
@@ -38,6 +41,5 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO utility_payments (id, branch_id, kind, period_start, previous_meter_value, current_meter_value, consumption, tariff, fixed_fee, amount, due_date, status, paid_at, note, ledger_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, branchId, kind, periodStart, values.previous, values.current, values.consumption, values.tariff, values.fixedFee, values.amount, dueDate, status, paidAt, optionalString(body, "note"), ledgerId)];
   if (ledgerId) statements.push(env.DB.prepare("INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, utility_payment_id, description, created_by) VALUES (?, 'EXPENSE', 'UTILITIES', 'UTILITIES', ?, 'POSTED', ?, ?, ?, ?, ?)").bind(ledgerId, values.amount, paidAt, branchId, id, `${kind}: ${optionalString(body, "note") ?? "Коммунальный платёж"}`, user.id));
   statements.push(auditStatement(env.DB, user, "utility_payment", id, "CREATE", null, { branchId, kind, consumption: values.consumption, tariff: values.tariff, fixedFee: values.fixedFee, amount: values.amount, status }));
-  await env.DB.batch(statements);
-  return json({ ok: true, id, consumption: values.consumption, amount: values.amount }, 201);
+  return receipt.commit(statements, { ok: true, id, consumption: values.consumption, amount: values.amount });
 };

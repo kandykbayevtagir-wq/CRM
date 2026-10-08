@@ -3,7 +3,8 @@ import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_l
 import type { CrmEnv } from "../_lib/env";
 import { badRequest, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
 import { isoColumn, organizationTimezone, zonedDateValue } from "../_lib/dates";
-import { nonNegativeNumber } from "../_lib/validation";
+import { nonNegativeMoney } from "../_lib/validation";
+import { mutationReceipt } from "../_lib/mutation-receipt";
 
 const statuses = new Set(["PLANNED", "DUE", "PAID", "OVERDUE"]);
 
@@ -21,11 +22,13 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   if (!user) return unauthorized();
   if (!hasCrmPermission(user, "finance.write")) return forbidden();
   const body = await readJson(request);
+  const receipt = await mutationReceipt(env.DB, user.id, "rent:create", body);
+  if (receipt.replay) return receipt.replay;
   const timezone = await organizationTimezone(env.DB);
   const branchId = stringValue(body, "branchId");
   const periodStart = zonedDateValue(body, "periodStart", timezone);
   const dueDate = zonedDateValue(body, "dueDate", timezone);
-  const amount = nonNegativeNumber(body.amount, "Сумма");
+  const amount = nonNegativeMoney(body.amount, "Сумма");
   const statusValue = stringValue(body, "status", "PLANNED").toUpperCase();
   const status = statuses.has(statusValue) ? statusValue : "PLANNED";
   if (!branchId || !periodStart || !dueDate || amount === null || amount <= 0) return badRequest("Филиал, период, срок и положительная сумма обязательны");
@@ -37,6 +40,5 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO rent_payments (id, branch_id, period_start, amount, due_date, status, paid_at, note, ledger_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, branchId, periodStart, amount, dueDate, status, paidAt, optionalString(body, "note", 500), ledgerId)];
   if (ledgerId) statements.push(env.DB.prepare("INSERT INTO financial_transactions (id, direction, kind, category, amount, status, occurred_at, branch_id, rent_payment_id, description, created_by) VALUES (?, 'EXPENSE', 'RENT', 'RENT', ?, 'POSTED', ?, ?, ?, ?, ?)").bind(ledgerId, amount, paidAt, branchId, id, optionalString(body, "note", 500) ?? "Аренда", user.id));
   statements.push(auditStatement(env.DB, user, "rent_payment", id, "CREATE", null, { branchId, periodStart, amount, dueDate, status }));
-  await env.DB.batch(statements);
-  return json({ ok: true, id }, 201);
+  return receipt.commit(statements, { ok: true, id });
 };

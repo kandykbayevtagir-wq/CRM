@@ -13,6 +13,7 @@ import { CENTRE_TIMEZONE, dateInputValue, dateValueInZone, formatCurrency, forma
 import { useApi } from "@/lib/use-api";
 import { useCan } from "@/lib/current-user";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { useOperationKey } from "@/lib/use-operation-key";
 
 type FinanceResponse = { ok: true; items: ExpenseRecord[] };
 type BranchResponse = { ok: true; items: Branch[] };
@@ -48,6 +49,7 @@ function ObligationStatusFields({ status, onStatusChange }: { status: string; on
 }
 
 export function FinanceView() {
+  const operationKey = useOperationKey();
   const canWrite = useCan("finance.write");
   const canExport = useCan("exports.read");
   const [query, setQuery] = useState("");
@@ -102,7 +104,8 @@ export function FinanceView() {
     setFormError(null);
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
     try {
-      await apiFetch(apiPath, { method: "POST", body: values });
+      await apiFetch(apiPath, { method: "POST", body: { ...values, idempotencyKey: operationKey.get({ apiPath, ...values }) } });
+      operationKey.reset();
       close();
       setNotice(success);
       dispatchCrmEvent("crm:data-changed");
