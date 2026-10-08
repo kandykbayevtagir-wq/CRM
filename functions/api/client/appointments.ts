@@ -49,9 +49,10 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const employeeId = stringValue(body, "employeeId");
   const appointmentId = stringValue(body, "appointmentId");
   const idempotencyKey = stringValue(body, "idempotencyKey");
+  const holdId = stringValue(body, "holdId");
   if (!startsAt || !serviceId || !branchId || !employeeId) return badRequest("Выберите услугу, филиал, специалиста и время");
   if (idempotencyKey.length > 128) return badRequest("Некорректный ключ повторной отправки");
-  const requestHash = [appointmentId, startsAt, serviceId, branchId, employeeId].join("|");
+  const requestHash = [appointmentId, startsAt, serviceId, branchId, employeeId, ...(holdId ? [holdId] : [])].join("|");
   if (idempotencyKey) {
     const previous = await env.DB.prepare("SELECT appointment_id AS appointmentId, user_id AS userId, request_hash AS requestHash, changed FROM booking_idempotency_keys WHERE idempotency_key = ? LIMIT 1")
       .bind(idempotencyKey).first<{ appointmentId: string; userId: string; requestHash: string; changed: number }>();
@@ -60,6 +61,11 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
     if (previous) return json({ ok: true, id: previous.appointmentId, changed: previous.changed === 1, replayed: true });
   }
   if (new Date(startsAt).getTime() <= Date.now()) return badRequest("Нельзя записаться на прошедшее время");
+  if (holdId && !await env.DB.prepare(`SELECT id FROM booking_holds WHERE id=? AND client_id=? AND status='HELD'
+    AND julianday(expires_at)>julianday('now') AND julianday(starts_at)=julianday(?) AND service_id=? AND branch_id=? AND employee_id=?
+    AND appointment_id IS ?`).bind(holdId,user.clientId,startsAt,serviceId,branchId,employeeId,appointmentId || null).first()) {
+    return conflict('Предложение истекло или уже использовано. Обновите лист ожидания.');
+  }
 
   const existing = appointmentId
     ? await env.DB.prepare(`SELECT id, revision, status, ${isoColumn("starts_at")} AS startsAt, total_amount AS totalAmount,
@@ -80,7 +86,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const date = localDate(startsAt, timezone);
   let slots;
   try {
-    slots = await findAvailableSlots(env.DB, { date, branchId, serviceId, employeeId, excludeAppointmentId: appointmentId || undefined });
+    slots = await findAvailableSlots(env.DB, { date, branchId, serviceId, employeeId, excludeAppointmentId: appointmentId || undefined, excludeHoldId: holdId || undefined });
   } catch (cause) {
     if (cause instanceof HttpError) return badRequest(cause.message);
     throw cause;
@@ -128,7 +134,14 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
   const idempotencyStatement = env.DB.prepare("INSERT INTO booking_idempotency_keys (idempotency_key, user_id, appointment_id, request_hash, changed) VALUES (?, ?, ?, ?, ?)")
     .bind(idempotencyKey || newId(), user.id, id, requestHash, changed ? 1 : 0);
   try {
-    await env.DB.batch([...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
+    const holdGuard = newId();
+    const holdStatements = holdId ? [
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM booking_holds WHERE id=? AND client_id=? AND status='HELD' AND julianday(expires_at)>julianday('now'))`).bind(holdGuard,holdId,user.clientId),
+      env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(holdGuard),
+      env.DB.prepare("UPDATE booking_holds SET status='CONVERTED' WHERE id=?").bind(holdId),
+      env.DB.prepare("UPDATE client_waitlist SET status='BOOKED' WHERE id=(SELECT waitlist_id FROM booking_holds WHERE id=?)").bind(holdId),
+    ] : [];
+    await env.DB.batch([...holdStatements, ...appointmentStatements, ...notificationStatements, ...reservationChanges, idempotencyStatement,
       auditStatement(env.DB, user, "appointment", id, changed ? "RESCHEDULE" : "CREATE", existing, { startsAt, serviceId, branchId, employeeId }),
     ]);
   } catch (cause) {

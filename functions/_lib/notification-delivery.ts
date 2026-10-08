@@ -51,7 +51,7 @@ function campaignStatements(env: CrmEnv, payload: Payload, status: "SENT" | "FAI
     env.DB.prepare(`UPDATE campaigns SET
       sent_count = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'SENT'),
       error_count = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'FAILED'),
-      status = CASE WHEN NOT EXISTS(SELECT 1 FROM campaign_recipients WHERE campaign_id = ? AND status = 'PENDING') THEN 'COMPLETED' ELSE status END,
+      status = CASE WHEN preparation_complete=1 AND NOT EXISTS(SELECT 1 FROM campaign_recipients WHERE campaign_id = ? AND status = 'PENDING') THEN 'COMPLETED' ELSE status END,
       updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'CANCELLED'`)
       .bind(payload.campaignId, payload.campaignId, payload.campaignId, payload.campaignId),
   ];
@@ -73,10 +73,11 @@ async function settle(env: CrmEnv, row: OutboxRow, payload: Payload, status: "SE
 }
 
 export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
+  if(env.APP_ENV==='staging') return 0;
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_TOKEN_MISSING");
   // A worker crash at the final attempt must settle linked reminders/campaigns too.
   const expired = await env.DB.prepare(`SELECT id FROM message_outbox WHERE status = 'PROCESSING' AND attempts >= 5
-    AND (julianday(lease_expires_at) <= julianday('now') OR (lease_expires_at IS NULL AND julianday(updated_at) < julianday('now', '-10 minutes'))) LIMIT 20`).all<{ id: string }>();
+    AND (julianday(lease_expires_at) <= julianday('now') OR (lease_expires_at IS NULL AND julianday(updated_at) < julianday('now', '-10 minutes'))) LIMIT 1`).all<{ id: string }>();
   for (const candidate of expired.results ?? []) {
     const row = await env.DB.prepare(`UPDATE message_outbox SET lease_token = ?, lease_expires_at = datetime('now', '+2 minutes')
       WHERE id = ? AND status = 'PROCESSING' AND attempts >= 5
@@ -95,7 +96,10 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
   const candidates = await env.DB.prepare(`SELECT id FROM message_outbox
     WHERE status = 'PENDING' AND attempts < 5 AND julianday(next_retry_at) <= julianday('now')
     ${onlyEventKey ? "AND event_key = ?" : ""}
-    ORDER BY CASE WHEN template_key = 'DIRECT' THEN 0 ELSE 1 END, next_retry_at LIMIT 6`)
+    AND NOT EXISTS(SELECT 1 FROM telegram_delivery_throttle t WHERE t.telegram_id=message_outbox.telegram_id AND julianday(t.attempted_at)>julianday('now','-1 second'))
+    ORDER BY CASE WHEN template_key='REMINDER_2H' THEN 0 WHEN template_key='DIRECT' THEN 1
+      WHEN template_key='CAMPAIGN' AND julianday(created_at)<julianday('now','-15 minutes') THEN 2
+      WHEN template_key='CAMPAIGN' THEN 4 ELSE 2 END, next_retry_at, created_at, id LIMIT 3`)
     .bind(...(onlyEventKey ? [onlyEventKey] : [])).all<{ id: string }>();
   for (const candidate of candidates.results ?? []) {
     const leaseToken = crypto.randomUUID();
@@ -105,20 +109,33 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
       RETURNING id, telegram_id AS telegramId, template_key AS templateKey, payload_json AS payloadJson, attempts, lease_token AS leaseToken`)
       .bind(leaseToken, candidate.id).first<OutboxRow>();
     if (!row) continue;
+    const throttle=await env.DB.prepare(`INSERT INTO telegram_delivery_throttle(telegram_id,attempted_at) VALUES(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      ON CONFLICT(telegram_id) DO UPDATE SET attempted_at=excluded.attempted_at WHERE julianday(telegram_delivery_throttle.attempted_at)<=julianday('now','-1 second') RETURNING telegram_id`)
+      .bind(row.telegramId).first();
+    if(!throttle) {
+      await env.DB.prepare("UPDATE message_outbox SET status='PENDING',attempts=attempts-1,lease_token=NULL,lease_expires_at=NULL,next_retry_at=datetime('now','+1 second') WHERE id=? AND lease_token=?").bind(row.id,leaseToken).run();
+      continue;
+    }
     let payload: Payload = {};
     let sent = false;
     try {
       payload = JSON.parse(row.payloadJson) as Payload;
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new TelegramApiError(400, null, "Invalid payload");
       if (row.templateKey === "DIRECT" && typeof payload.userId === "string") {
-        const user = await env.DB.prepare("SELECT role, client_id AS clientId FROM users WHERE id = ? AND telegram_id = ? AND active = 1 AND (role <> 'CLIENT' OR EXISTS(SELECT 1 FROM clients c WHERE c.id = users.client_id AND c.is_active = 1))").bind(payload.userId, row.telegramId).first<{ role: string; clientId: string | null }>();
+        const user = await env.DB.prepare("SELECT role, client_id AS clientId FROM users WHERE id = ? AND telegram_id = ? AND active = 1 AND (?=0 OR notifications_allowed=1) AND (role <> 'CLIENT' OR EXISTS(SELECT 1 FROM clients c WHERE c.id = users.client_id AND c.is_active = 1))").bind(payload.userId, row.telegramId,payload.respectNotifications ? 1 : 0).first<{ role: string; clientId: string | null }>();
         if (!user || (payload.clientId && payload.clientId !== user.clientId) || (typeof payload.requiredPermission === "string" && !hasPermission(user.role, payload.requiredPermission as Permission))) {
           await settle(env, row, payload, "CANCELLED", "ACCESS_REVOKED"); continue;
         }
       }
+      if (typeof payload.taskId==='string' && !await env.DB.prepare("SELECT id FROM tasks WHERE id=? AND status IN ('OPEN','IN_PROGRESS') AND due_date=? AND assignee_id=?").bind(payload.taskId,payload.taskDueDate,payload.userId).first()) {
+        await settle(env,row,payload,'CANCELLED','TASK_CHANGED');continue;
+      }
       if (row.templateKey !== "DIRECT") {
         const recipient = await env.DB.prepare("SELECT u.id, u.client_id AS clientId FROM users u JOIN clients c ON c.id = u.client_id WHERE u.telegram_id = ? AND u.active = 1 AND u.notifications_allowed = 1 AND c.is_active = 1").bind(row.telegramId).first<{ id: string; clientId: string }>();
         let eligible = Boolean(recipient);
+        if(typeof payload.clientId==='string') eligible=eligible && payload.clientId===recipient?.clientId;
+        if(typeof payload.holdId==='string') eligible=eligible && Boolean(await env.DB.prepare("SELECT id FROM booking_holds WHERE id=? AND client_id=? AND status='HELD' AND julianday(expires_at)>julianday('now')").bind(payload.holdId,recipient?.clientId ?? '').first());
+        if(typeof payload.followUpId==='string') eligible=eligible && Boolean(await env.DB.prepare("SELECT id FROM follow_ups WHERE id=? AND client_id=? AND status='OPEN' AND recommended_date=?").bind(payload.followUpId,recipient?.clientId ?? '',payload.recommendedDate).first());
         if (typeof payload.notificationId === "string") {
           const reminder = ["REMINDER_24H", "REMINDER_2H"].includes(row.templateKey);
           eligible = eligible && Boolean(await env.DB.prepare(`SELECT n.id FROM notifications n JOIN appointments a ON a.id = n.appointment_id WHERE n.id = ? AND n.client_id = ? AND n.status = 'PENDING'
@@ -129,6 +146,7 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
         if (!eligible) { await settle(env, row, payload, "CANCELLED", "RECIPIENT_UNAVAILABLE"); continue; }
       }
       let text = String(payload.message ?? "");
+      if(row.templateKey==='CAMPAIGN') text=text.replace(/\{clientName\}/g,String(payload.clientName ?? ''));
       if (!["DIRECT", "CAMPAIGN"].includes(row.templateKey)) {
         const template = await env.DB.prepare("SELECT body, enabled FROM notification_templates WHERE template_key = ?").bind(row.templateKey).first<{ body: string; enabled: number }>();
         if (!template?.enabled) { await settle(env, row, payload, "CANCELLED", "TEMPLATE_DISABLED"); continue; }
@@ -156,4 +174,5 @@ export async function processOutbox(env: CrmEnv, onlyEventKey?: string) {
       if (error instanceof TelegramApiError && error.status === 429) break;
     }
   }
+  return candidates.results?.length ?? 0;
 }

@@ -256,3 +256,7 @@ svg { flex-shrink: 0; vertical-align: middle; }
   .dashboard-grid, .dashboard-grid-equal, .split-grid { grid-template-columns: 1fr 1fr !important; }
   a[href]::after { content: "" !important; }
 }
+/* Recovery notices stay usable above the workspace on narrow Telegram viewports. */
+.pending-operations { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:20px; }
+.pending-operations > div { flex:1 1 240px; min-width:0; }
+.pending-operations p { margin:6px 0 0; overflow-wrap:anywhere; }

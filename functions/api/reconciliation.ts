@@ -3,6 +3,7 @@ import Decimal from "decimal.js";
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
 import { json } from "../_lib/http";
+import { reconciliationIssues } from '../_lib/reconciliation';
 
 type Check = {
   key: string;
@@ -57,5 +58,6 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     check("rent", "Аренда ↔ финансовый журнал", rent ?? { amount: 0, count: 0 }, rentLedger ?? { amount: 0, count: 0 }),
     check("utilities", "Коммунальные ↔ финансовый журнал", utilities ?? { amount: 0, count: 0 }, utilitiesLedger ?? { amount: 0, count: 0 }),
   ];
-  return json({ ok: true, healthy: checks.every((item) => item.ok), checks, checkedAt: new Date().toISOString() });
+  const details=await reconciliationIssues(env.DB);
+  return json({ ok: true, healthy: checks.every((item) => item.ok) && details.issueCount===0, checks, ...details, checkedAt: new Date().toISOString() });
 };

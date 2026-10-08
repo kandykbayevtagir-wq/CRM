@@ -36,6 +36,8 @@ export function SettingsView() {
   const [workingDays, setWorkingDays] = useState<Set<number>>(() => new Set([1, 2, 3, 4, 5, 6]));
   const [cancellationWindowHours, setCancellationWindowHours] = useState(2);
   const [loyaltyPointsPer1000, setLoyaltyPointsPer1000] = useState(1);
+  const [dailySummaryEnabled,setDailySummaryEnabled]=useState(false);
+  const [dailySummaryHour,setDailySummaryHour]=useState(9);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [branchModalOpen, setBranchModalOpen] = useState(false);
@@ -62,9 +64,11 @@ export function SettingsView() {
     setWorkingDays(parseWorkingDays(data.settings.workingDays));
     setCancellationWindowHours(Number(data.settings.cancellationWindowHours));
     setLoyaltyPointsPer1000(Number(data.settings.loyaltyPointsPer1000));
+    setDailySummaryEnabled(Boolean(data.settings.dailySummaryEnabled));setDailySummaryHour(data.settings.dailySummaryHour ?? 9);
   }, [data?.settings]);
 
   const dirty = Boolean(data?.settings) && (
+    dailySummaryEnabled!==Boolean(data?.settings.dailySummaryEnabled) || dailySummaryHour!==(data?.settings.dailySummaryHour ?? 9) ||
     brandName !== data?.settings.brandName || bookingStartTime !== data?.settings.bookingStartTime || bookingEndTime !== data?.settings.bookingEndTime
     || bookingSlotInterval !== Number(data?.settings.bookingSlotInterval) || [...workingDays].sort().join(",") !== data?.settings.workingDays
     || cancellationWindowHours !== Number(data?.settings.cancellationWindowHours) || loyaltyPointsPer1000 !== Number(data?.settings.loyaltyPointsPer1000)
@@ -79,7 +83,7 @@ export function SettingsView() {
     setFormError(null);
     setSaved(false);
     try {
-      await apiFetch("/api/settings", { method: "PATCH", body: { brandName: brandName.trim(), bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays: [...workingDays].sort().join(","), cancellationWindowHours, loyaltyPointsPer1000 } });
+      await apiFetch("/api/settings", { method: "PATCH", body: { brandName: brandName.trim(), bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays: [...workingDays].sort().join(","), cancellationWindowHours, loyaltyPointsPer1000,dailySummaryEnabled,dailySummaryHour } });
       dispatchCrmEvent("crm:data-changed");
       await reload();
       setSaved(true);
@@ -171,6 +175,7 @@ export function SettingsView() {
             <FormField label="Шаг календаря"><select value={bookingSlotInterval} onChange={(event) => { setBookingSlotInterval(Number(event.target.value)); setSaved(false); }} disabled={!canWrite}><option value={15}>15 минут</option><option value={30}>30 минут</option><option value={60}>60 минут</option></select></FormField>
             <FormField label="Отмена не позднее, чем за" hint="часов до начала приёма; 0 — без ограничения"><input type="number" min={0} max={72} inputMode="numeric" value={cancellationWindowHours} onChange={(event) => { setCancellationWindowHours(Math.max(0, Math.min(72, Number(event.target.value) || 0))); setSaved(false); }} disabled={!canWrite} /></FormField>
             <div className="form-field form-field-wide"><span>Рабочие дни</span><div className="weekday-picker" role="group" aria-label="Рабочие дни недели">{weekdayNames.map((name, index) => { const day = index + 1; const active = workingDays.has(day); return <button type="button" key={name} className={`segment-button ${active ? "segment-button-active" : ""}`} aria-pressed={active} onClick={() => { toggleDay(day); setSaved(false); }} disabled={!canWrite}>{name}</button>; })}</div></div>
+            <FormField label="Сводка дня владельцу"><select value={dailySummaryEnabled?'on':'off'} disabled={!canWrite} onChange={e=>setDailySummaryEnabled(e.target.value==='on')}><option value="off">Выключена</option><option value="on">Отправлять в Telegram</option></select></FormField><FormField label="Час сводки" hint="По часовому поясу центра"><input type="number" min="0" max="23" value={dailySummaryHour} disabled={!canWrite} onChange={e=>setDailySummaryHour(Number(e.target.value))}/></FormField>
             <FormField label="Бонусов за каждые 1 000 ₸" className="form-field-wide" hint="Начисляются клиенту после завершения оплаченного приёма"><input type="number" min={0} max={100} inputMode="numeric" value={loyaltyPointsPer1000} onChange={(event) => { setLoyaltyPointsPer1000(Math.max(0, Math.min(100, Number(event.target.value) || 0))); setSaved(false); }} disabled={!canWrite} /></FormField>
           </div>
         </SectionCard>

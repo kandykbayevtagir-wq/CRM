@@ -11,7 +11,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
     SELECT brand_name AS brandName, currency, timezone,
       booking_start_time AS bookingStartTime, booking_end_time AS bookingEndTime,
       booking_slot_interval AS bookingSlotInterval, working_days AS workingDays,
-      cancellation_window_hours AS cancellationWindowHours, loyalty_points_per_1000 AS loyaltyPointsPer1000
+      cancellation_window_hours AS cancellationWindowHours, loyalty_points_per_1000 AS loyaltyPointsPer1000,daily_summary_enabled AS dailySummaryEnabled,daily_summary_hour AS dailySummaryHour
     FROM organization_settings WHERE id = 1
   `).first();
   const branches = await env.DB.prepare("SELECT id, name, address, phone, is_active AS isActive FROM branches ORDER BY name ASC").all();
@@ -32,14 +32,17 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env }) =>
   const workingDays = [...new Set(stringValue(body, "workingDays", "1,2,3,4,5,6").split(",").map((day) => Number(day.trim())).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7))].sort().join(",") || "1,2,3,4,5,6";
   const cancellationWindowHours = Math.min(72, Math.max(0, numberValue(body, "cancellationWindowHours", 2)));
   const loyaltyPointsPer1000 = Math.min(100, Math.max(0, numberValue(body, "loyaltyPointsPer1000", 1)));
+  const dailySummaryEnabled=body.dailySummaryEnabled===undefined?null:body.dailySummaryEnabled===true?1:0;
+  const dailySummaryHour=body.dailySummaryHour===undefined?null:numberValue(body,'dailySummaryHour',9);
+  if(dailySummaryHour!==null && (!Number.isInteger(dailySummaryHour) || dailySummaryHour<0 || dailySummaryHour>23)) return badRequest('Час сводки должен быть от 0 до 23');
   if (!brandName) return badRequest("Название организации обязательно");
   if (!validShift(bookingStartTime, bookingEndTime, null, null)) return badRequest("Проверьте часы работы центра");
   try { new Intl.DateTimeFormat("ru-RU", { timeZone: timezone }).format(); } catch { return badRequest("Неизвестный часовой пояс"); }
   if (currency !== "KZT") return badRequest("Финансовый учёт ведётся в KZT");
   await env.DB.prepare(`
     UPDATE organization_settings SET brand_name = ?, currency = ?, timezone = ?, booking_start_time = ?, booking_end_time = ?,
-      booking_slot_interval = ?, working_days = ?, cancellation_window_hours = ?, loyalty_points_per_1000 = ?, updated_at = ? WHERE id = 1
-  `).bind(brandName, currency, timezone, bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays, cancellationWindowHours, loyaltyPointsPer1000, now()).run();
+      booking_slot_interval = ?, working_days = ?, cancellation_window_hours = ?, loyalty_points_per_1000 = ?, daily_summary_enabled=COALESCE(?,daily_summary_enabled),daily_summary_hour=COALESCE(?,daily_summary_hour),updated_at = ? WHERE id = 1
+  `).bind(brandName, currency, timezone, bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays, cancellationWindowHours, loyaltyPointsPer1000,dailySummaryEnabled,dailySummaryHour, now()).run();
   await env.DB.prepare("INSERT INTO audit_logs (id, actor_id, entity_type, entity_id, action, after_json) VALUES (?, ?, 'settings', '1', 'UPDATE', ?)")
     .bind(crypto.randomUUID(), user.id, JSON.stringify({ brandName, currency, timezone, bookingStartTime, bookingEndTime, bookingSlotInterval, workingDays, cancellationWindowHours, loyaltyPointsPer1000 })).run();
   return json({ ok: true });

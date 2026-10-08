@@ -3,7 +3,7 @@
 import { ResponsiveTable } from "@/components/responsive-table";
 
 import { Check, Download, PackagePlus, Plus, RefreshCw, Send, ShoppingCart, Target } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { apiFetch, dispatchCrmEvent } from "@/lib/api-client";
 import { ConfirmDialog, EmptyState, ErrorState, FormField, InlineError, LoadingState, Modal } from "@/components/data-state";
@@ -262,14 +262,27 @@ export function CampaignsView() {
   const [sendTarget, setSendTarget] = useState<CampaignRow | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [stopTarget, setStopTarget] = useState<CampaignRow | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => { const timer = window.setInterval(reload, 30000); return () => window.clearInterval(timer); }, [reload]);
+  async function stop() {
+    if (!stopTarget || stopping) return;
+    setStopping(true); setStopError(null);
+    try {
+      await apiFetch(`/api/campaigns/${stopTarget.id}`, { method: 'PATCH', body: { status: 'CANCELLED' } });
+      setNotice(`Кампания «${stopTarget.name}» остановлена.`);
+      setStopTarget(null); dispatchCrmEvent('crm:data-changed');
+    } catch (cause) { setStopError(errorText(cause, 'Не удалось остановить кампанию')); } finally { setStopping(false); }
+  }
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving) return;
     setSaving(true); setFormError(null);
     const form = new FormData(event.currentTarget);
     try {
-      await apiFetch("/api/campaigns", { method: "POST", body: { name: form.get("name"), message: form.get("message") } });
+      await apiFetch("/api/campaigns", { method: "POST", body: { name: form.get("name"), message: form.get("message"),scheduledAt:form.get("scheduledAt") || null } });
       setOpen(false); dispatchCrmEvent("crm:data-changed");
     } catch (cause) { setFormError(errorText(cause, "Не удалось сохранить кампанию")); } finally { setSaving(false); }
   }
@@ -277,8 +290,8 @@ export function CampaignsView() {
     if (!sendTarget || sending) return;
     setSending(true); setSendError(null);
     try {
-      const result = await apiFetch<{ ok: true; recipientCount: number }>(`/api/campaigns/${sendTarget.id}/send`, { method: "POST", body: {} });
-      setNotice(`Кампания «${sendTarget.name}» поставлена в очередь: ${plural(result.recipientCount, ["получатель", "получателя", "получателей"])}. Доставка займёт несколько минут.`);
+      await apiFetch<{ ok: true }>(`/api/campaigns/${sendTarget.id}/send`, { method: "POST", body: {} });
+      setNotice(`Кампания «${sendTarget.name}» поставлена в очередь. Получатели подготавливаются автоматически; прогресс появится в списке.`);
       setSendTarget(null); dispatchCrmEvent("crm:data-changed");
     } catch (cause) { setSendError(errorText(cause, "Не удалось запустить кампанию")); } finally { setSending(false); }
   }
@@ -286,9 +299,10 @@ export function CampaignsView() {
     <PageHeader eyebrow="Маркетинг" title="Telegram-кампании" description="Сообщения получают только клиенты, согласившиеся на рассылки. Доставка идёт через очередь с повторами и защитой от дублей." actions={canWrite ? <Button onClick={() => { setFormError(null); setOpen(true); }}><Plus size={15} /> Новая кампания</Button> : undefined} />
     {notice ? <p className="notice notice-success" role="status">{notice}</p> : null}
     {loading && !data ? <LoadingState /> : null}{error && !data ? <ErrorState message={error} onRetry={reload} /> : null}
-    {data ? <SectionCard title="Кампании" subtitle={plural(data.items.length, ["кампания", "кампании", "кампаний"])}>{data.items.length ? <div className="simple-list">{data.items.map((campaign) => <div className="simple-list-row" key={campaign.id}><span><strong>{campaign.name}</strong><small>{plural(campaign.recipientCount, ["получатель", "получателя", "получателей"])} · отправлено {campaign.sentCount} · ошибок {campaign.errorCount}</small></span><span className="row-actions"><StatusPill status={campaign.status.toLowerCase()} />{canWrite && ["DRAFT", "SCHEDULED"].includes(campaign.status) ? <Button variant="ghost" onClick={() => { setSendError(null); setSendTarget(campaign); }}><Send size={14} /> Запустить</Button> : null}</span></div>)}</div> : <EmptyState title="Кампаний пока нет" description="Создайте сообщение об акции или напоминание — оно уйдёт клиентам с согласием на рассылку." action={canWrite ? <Button onClick={() => { setFormError(null); setOpen(true); }}><Plus size={14} /> Новая кампания</Button> : undefined} />}</SectionCard> : null}
-    {open ? <Modal title="Новая кампания" onClose={() => setOpen(false)} busy={saving} footer={<><Button variant="secondary" onClick={() => setOpen(false)} disabled={saving}>Отмена</Button><Button type="submit" form="campaign-form" loading={saving}>{saving ? "Сохраняем…" : "Сохранить кампанию"}</Button></>}><form id="campaign-form" className="form-grid" onSubmit={(event) => void create(event)}><FormField label="Название" className="form-field-wide"><input name="name" required maxLength={200} autoFocus /></FormField><FormField label="Текст сообщения" className="form-field-wide" hint="До 3 800 символов. Подстановки: {clientName}, {date}, {time}, {specialist}, {service}, {branch}"><textarea name="message" required rows={6} maxLength={3800} /></FormField>{formError ? <div className="form-field-wide"><InlineError>{formError}</InlineError></div> : null}</form></Modal> : null}
-    {sendTarget ? <ConfirmDialog title="Запустить рассылку?" description={`«${sendTarget.name}» будет отправлена всем активным клиентам с согласием на рассылки. Остановить отправку после запуска нельзя.`} confirmLabel="Запустить" pending={sending} error={sendError} onConfirm={() => void send()} onClose={() => { if (!sending) setSendTarget(null); }}><blockquote className="campaign-preview">{sendTarget.message}</blockquote></ConfirmDialog> : null}
+    {data ? <SectionCard title="Кампании" subtitle={plural(data.items.length, ["кампания", "кампании", "кампаний"])}>{data.items.length ? <div className="simple-list">{data.items.map((campaign) => <div className="simple-list-row" key={campaign.id}><span><strong>{campaign.name}</strong><small>{plural(campaign.recipientCount, ["получатель", "получателя", "получателей"])} · отправлено {campaign.sentCount} · ошибок {campaign.errorCount}{campaign.status === "SCHEDULED" && campaign.scheduledAt ? ` · запуск ${formatDateTime(campaign.scheduledAt)}` : ""}</small></span><span className="row-actions"><StatusPill status={campaign.status.toLowerCase()} />{canWrite && ["DRAFT", "SCHEDULED"].includes(campaign.status) ? <Button variant="ghost" onClick={() => { setSendError(null); setSendTarget(campaign); }}><Send size={14} /> Запустить</Button> : null}{canWrite && ["SCHEDULED", "PROCESSING"].includes(campaign.status) ? <Button variant="ghost" onClick={() => { setStopError(null); setStopTarget(campaign); }}>Остановить</Button> : null}</span></div>)}</div> : <EmptyState title="Кампаний пока нет" description="Создайте сообщение об акции или напоминание — оно уйдёт клиентам с согласием на рассылку." action={canWrite ? <Button onClick={() => { setFormError(null); setOpen(true); }}><Plus size={14} /> Новая кампания</Button> : undefined} />}</SectionCard> : null}
+    {open ? <Modal title="Новая кампания" onClose={() => setOpen(false)} busy={saving} footer={<><Button variant="secondary" onClick={() => setOpen(false)} disabled={saving}>Отмена</Button><Button type="submit" form="campaign-form" loading={saving}>{saving ? "Сохраняем…" : "Сохранить кампанию"}</Button></>}><form id="campaign-form" className="form-grid" onSubmit={(event) => void create(event)}><FormField label="Название" className="form-field-wide"><input name="name" required maxLength={200} autoFocus /></FormField><FormField label="Текст сообщения" className="form-field-wide" hint="До 3 800 символов. Подстановка: {clientName}"><textarea name="message" required rows={6} maxLength={3800} /></FormField><FormField label="Запуск по расписанию" className="form-field-wide" hint="Необязательно. Время по часовому поясу центра"><input name="scheduledAt" type="datetime-local"/></FormField>{formError ? <div className="form-field-wide"><InlineError>{formError}</InlineError></div> : null}</form></Modal> : null}
+    {sendTarget ? <ConfirmDialog title="Запустить рассылку?" description={`«${sendTarget.name}» будет отправлена всем активным клиентам с согласием на рассылки. Получатели готовятся и обрабатываются небольшими пакетами.`} confirmLabel="Запустить" pending={sending} error={sendError} onConfirm={() => void send()} onClose={() => { if (!sending) setSendTarget(null); }}><blockquote className="campaign-preview">{sendTarget.message}</blockquote></ConfirmDialog> : null}
+    {stopTarget ? <ConfirmDialog title="Остановить рассылку?" description="Новые сообщения не будут отправляться. Уже отправленные сообщения и запросы, находящиеся в отправке, отозвать нельзя." confirmLabel="Остановить" pending={stopping} error={stopError} onConfirm={() => void stop()} onClose={() => { if (!stopping) setStopTarget(null); }} /> : null}
   </>;
 }
 

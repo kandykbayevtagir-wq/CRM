@@ -188,7 +188,7 @@ describe("Telegram outbox and webhook", () => {
     await processOutbox(context.env);
     const retry=sqlite.prepare("SELECT status, attempts, (julianday(next_retry_at)-julianday('now'))*86400 AS seconds FROM message_outbox").get()!;
     expect(retry.status).toBe("PENDING"); expect(Number(retry.seconds)).toBeGreaterThan(295);
-    sqlite.exec("UPDATE message_outbox SET next_retry_at=CURRENT_TIMESTAMP");
+    sqlite.exec("UPDATE message_outbox SET next_retry_at=CURRENT_TIMESTAMP; UPDATE telegram_delivery_throttle SET attempted_at=datetime('now','-2 seconds')");
     vi.stubGlobal("fetch",vi.fn(async()=>Response.json({ok:false,error_code:403},{status:403})));
     await processOutbox(context.env);
     expect(sqlite.prepare("SELECT status,last_error FROM message_outbox").get()).toMatchObject({status:"FAILED",last_error:"TELEGRAM_403"});

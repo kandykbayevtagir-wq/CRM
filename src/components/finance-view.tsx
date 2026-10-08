@@ -19,7 +19,7 @@ type FinanceResponse = { ok: true; items: ExpenseRecord[] };
 type BranchResponse = { ok: true; items: Branch[] };
 type RentResponse = { ok: true; items: RentRecord[] };
 type UtilityResponse = { ok: true; items: UtilityRecord[] };
-type ReconciliationResponse = { ok: true; healthy: boolean; checks: ReconciliationCheck[]; checkedAt: string };
+type ReconciliationResponse = { ok: true; healthy: boolean; checks: ReconciliationCheck[]; checkedAt: string; issueCount?:number; issues?:{kind:string;sourceId:string|null;ledgerId:string|null;code:string}[] };
 
 const categoryLabels: Record<string, string> = { RENT: "Аренда", UTILITIES: "Коммунальные услуги", SUPPLIES: "Расходники", MARKETING: "Маркетинг", TAX: "Налоги", EQUIPMENT: "Оборудование", SALARY: "Зарплата", OTHER: "Другое" };
 const utilityKinds: Record<string, string> = { ELECTRICITY: "Электричество", WATER: "Вода", HEATING: "Отопление", INTERNET: "Интернет", TELECOM: "Связь", OTHER: "Другое" };
@@ -203,6 +203,7 @@ export function FinanceView() {
 
         <SectionCard title="Контроль целостности" subtitle={reconciliation ? `Сверка источников и финансового журнала · ${formatDateTime(reconciliation.checkedAt)}` : "Сверка источников и финансового журнала"} action={<Button variant="ghost" onClick={() => void reloadReconciliation()} loading={reconciliationLoading}>Проверить ещё раз</Button>}>
           {reconciliationError && !reconciliation ? <ErrorState message={reconciliationError} onRetry={reloadReconciliation} /> : null}
+          {reconciliation?.issueCount ? <div className="notice notice-error" role="alert"><strong>Несоответствий по операциям: {reconciliation.issueCount}</strong><p>Проверьте источник и строку журнала. Автоматическое изменение финансовых данных отключено.</p><ul>{reconciliation.issues?.map((issue,i)=><li key={i}>{issue.kind} · источник {issue.sourceId || 'не указан'} · журнал {issue.ledgerId || 'отсутствует'} · {issue.code}</li>)}</ul></div> : null}
           {reconciliation ? <div className="reconciliation-grid">{reconciliation.checks.map((item) => <div className={`reconciliation-item ${item.ok ? "reconciliation-ok" : "reconciliation-warning"}`} key={item.key}><span className="reconciliation-icon">{item.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}</span><div><strong>{item.label}</strong><span>{item.ok ? `${plural(item.sourceCount, ["операция совпадает", "операции совпадают", "операций совпадают"])}` : `Разница ${formatCurrency(item.difference)} · источник ${item.sourceCount}, журнал ${item.ledgerCount}`}</span></div></div>)}</div> : null}
           {!reconciliation && !reconciliationError ? <p className="section-card-note">Проверка выполняется…</p> : null}
         </SectionCard>

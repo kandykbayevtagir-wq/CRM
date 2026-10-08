@@ -1,3 +1,5 @@
+import { rememberOperation,forgetOperation,setOperationActor } from './pending-operations';
+
 export class ApiError extends Error {
   readonly status: number;
   readonly fieldErrors: Record<string, string>;
@@ -41,7 +43,12 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   }
 
   let body = init.body;
+  let operationKey: string | null = null;
   if (body && typeof body !== "string" && !(body instanceof FormData)) {
+    if ((init.method || 'GET').toUpperCase()==='POST') {
+      const operation=await rememberOperation(path,body as Record<string,unknown>);
+      if (operation) {operationKey=operation.key;body={...body,idempotencyKey:operation.key};}
+    }
     headers.set("content-type", "application/json");
     body = JSON.stringify(body);
   }
@@ -66,10 +73,14 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   const payload = (await response.json().catch(() => null)) as ({ error?: string; fieldErrors?: Record<string, string>; code?: string } & T) | null;
   if (!payload || typeof payload !== "object") throw new ApiError("Сервис вернул неполный ответ. Повторите попытку.", response.status >= 400 ? response.status : 502);
   if (!response.ok) {
+    if (operationKey && [400,403,404,422].includes(response.status)) forgetOperation(operationKey);
     const rawMessage = payload.error ?? "Не удалось выполнить запрос";
     throw new ApiError(humanizeApiError(response.status, rawMessage, payload.code ?? null), response.status, payload.fieldErrors ?? {}, payload.code ?? null);
   }
 
+  if (operationKey) forgetOperation(operationKey);
+  if (path==='/api/auth/me' && 'user' in payload) setOperationActor((payload as {user:{id:string}}).user.id);
+  if (path==='/api/auth/logout') setOperationActor('');
   return payload;
 }
 

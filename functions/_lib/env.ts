@@ -4,4 +4,7 @@ export type CrmEnv = Env & {
   CRM_OWNER_TELEGRAM_ID?: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   MINI_APP_URL: string;
+  JOBS?: Fetcher;
+  DELIVERY?: Fetcher;
+  APP_ENV?: 'staging' | 'production';
 };

@@ -38,6 +38,7 @@ import { GlobalSearch } from "@/components/global-search";
 import { AuthHint, EmptyState, ErrorState, LoadingState, isAuthError } from "@/components/data-state";
 import { hasPermission, type Permission } from "@/lib/permissions";
 import { CurrentUserProvider } from "@/lib/current-user";
+import { PendingOperations } from '@/components/pending-operations';
 
 const primaryNavigation = [
   { href: "/today", label: "Сегодня", icon: CalendarClock, permission: "appointments.manage_all" as Permission },
@@ -291,7 +292,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div> : null}
           </div>
         </header>
-        <main id="main-content" tabIndex={-1} className="content-area page-transition"><CurrentUserProvider user={user}>{children}</CurrentUserProvider></main>
+        <main id="main-content" tabIndex={-1} className="content-area page-transition"><CurrentUserProvider user={user}><PendingOperations actorId={user.id} />{children}</CurrentUserProvider></main>
       </div>
     </div>
   );
