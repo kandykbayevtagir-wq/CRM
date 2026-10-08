@@ -117,6 +117,17 @@ describe('exclusive waitlist offers',()=>{
   expect(sqlite.prepare('SELECT status FROM client_waitlist').get()?.status).toBe('CANCELLED');
   expect(sqlite.prepare('SELECT status FROM booking_holds').get()?.status).toBe('EXPIRED');
  });
+ it('expires requests for archived services without failing automation',async()=>{
+  sqlite.exec("INSERT INTO client_waitlist(id,client_id,service_id,branch_id) VALUES('waiting','client','service','branch'); UPDATE services SET is_active=0");
+  await expect(offerWaitlistSlot(await env())).resolves.toBeUndefined();
+  expect(sqlite.prepare('SELECT status FROM client_waitlist').get()?.status).toBe('EXPIRED');expect(n('booking_holds')).toBe(0);
+ });
+ it('releases an offer for an archived branch and suppresses its Telegram message',async()=>{
+  await offer();sqlite.exec('UPDATE branches SET is_active=0');const e=await env();await expireOffers(e);
+  expect(sqlite.prepare('SELECT status FROM booking_holds').get()?.status).toBe('EXPIRED');
+  const send=vi.fn(async()=>Response.json({ok:true,result:{message_id:1}}));vi.stubGlobal('fetch',send);
+  await processOutbox(e);expect(send).not.toHaveBeenCalled();expect(sqlite.prepare('SELECT status FROM message_outbox').get()?.status).toBe('CANCELLED');
+ });
 });
 describe('financial recovery and operational readiness',()=>{
  it('returns only the actors saved receipt and never reports an absent receipt as a failed write',async()=>{
