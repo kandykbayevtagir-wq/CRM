@@ -1,29 +1,23 @@
-import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../../../_lib/auth";
-import type { CrmEnv } from "../../../_lib/env";
-import { badRequest, json, newId, notFound } from "../../../_lib/http";
+import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from '../../../_lib/auth';
+import type { CrmEnv } from '../../../_lib/env';
+import { badRequest, json, notFound } from '../../../_lib/http';
 
-export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env, params }) => {
-  const user = await getSessionUser(request, env.DB);
+export const onRequestPost: PagesFunction<CrmEnv> = async ({request,env,params}) => {
+  const user=await getSessionUser(request,env.DB);
   if (!user) return unauthorized();
-  if (!hasCrmPermission(user, "campaigns.write")) return forbidden();
-  const id = Array.isArray(params.id) ? params.id[0] : params.id;
-  const campaign = await env.DB.prepare("SELECT id, segment_id AS segmentId, message, status, scheduled_at AS scheduledAt FROM campaigns WHERE id = ?").bind(id).first<{ id: string; segmentId: string | null; message: string; status: string; scheduledAt: string | null }>();
-  if (!campaign) return notFound("Кампания не найдена");
-  if (!["DRAFT", "SCHEDULED"].includes(campaign.status)) return badRequest("Кампания уже запускалась или отменена");
-  if (campaign.status === "SCHEDULED" && campaign.scheduledAt && new Date(campaign.scheduledAt).getTime() > Date.now()) return badRequest("Кампания ещё не наступила по расписанию");
-  // Only clients who opted in to marketing messages are enqueued, so recipient counts match what will be delivered.
-  const recipients = await env.DB.prepare(`SELECT c.id AS clientId, u.telegram_id AS telegramId, c.full_name AS clientName FROM clients c INNER JOIN users u ON u.client_id = c.id AND u.active = 1 AND u.notifications_allowed = 1 WHERE c.is_active = 1 AND EXISTS (SELECT 1 FROM client_consents cc WHERE cc.client_id = c.id AND cc.kind = 'MARKETING' AND cc.revoked_at IS NULL)${campaign.segmentId ? " AND (SELECT 1 FROM client_segments cs WHERE cs.id = ? AND (json_extract(cs.criteria_json, '$.minVisits') IS NULL OR (SELECT COUNT(*) FROM appointments av WHERE av.client_id = c.id AND av.status = 'COMPLETED') >= json_extract(cs.criteria_json, '$.minVisits')) AND (json_extract(cs.criteria_json, '$.minRevenue') IS NULL OR (SELECT COALESCE(SUM(p.amount), 0) FROM payments p INNER JOIN appointments ap ON ap.id = p.appointment_id WHERE ap.client_id = c.id AND p.payment_status = 'POSTED') >= json_extract(cs.criteria_json, '$.minRevenue')))" : ""}`).bind(...(campaign.segmentId ? [campaign.segmentId] : [])).all<{ clientId: string; telegramId: string; clientName: string }>();
-  if (!recipients.results?.length) return badRequest("В выбранном сегменте нет клиентов, согласившихся получать рассылки в Telegram");
-  if (recipients.results.length > 2000) return badRequest("Слишком много получателей для одной кампании (максимум 2000). Сузьте сегмент.");
-  const statements: D1PreparedStatement[] = [env.DB.prepare("UPDATE campaigns SET status = 'PROCESSING', recipient_count = ?, sent_count = 0, error_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(recipients.results.length, id)];
-  for (const recipient of recipients.results) {
-    const eventKey = `campaign:${id}:${recipient.clientId}`;
-    statements.push(
-      env.DB.prepare("INSERT OR IGNORE INTO campaign_recipients (id, campaign_id, client_id, telegram_id) VALUES (?, ?, ?, ?)").bind(newId(), id, recipient.clientId, recipient.telegramId),
-      env.DB.prepare("INSERT OR IGNORE INTO message_outbox (id, event_key, telegram_id, template_key, payload_json) VALUES (?, ?, ?, 'CAMPAIGN', ?)").bind(newId(), eventKey, recipient.telegramId, JSON.stringify({ message: campaign.message, clientName: recipient.clientName, campaignId: id, clientId: recipient.clientId })),
-    );
+  if (!hasCrmPermission(user,'campaigns.write')) return forbidden();
+  const id=Array.isArray(params.id)?params.id[0]:params.id;
+  const campaign=await env.DB.prepare('SELECT status,scheduled_at AS scheduledAt FROM campaigns WHERE id=?').bind(id).first<{status:string;scheduledAt:string|null}>();
+  if (!campaign) return notFound('Кампания не найдена');
+  if (['PROCESSING','COMPLETED'].includes(campaign.status)) return json({ok:true,replayed:true,status:campaign.status});
+  if (!['DRAFT','SCHEDULED'].includes(campaign.status)) return badRequest('Кампания отменена');
+  if (campaign.scheduledAt && Date.parse(campaign.scheduledAt)>Date.now()) return badRequest('Кампания ещё не наступила по расписанию');
+  const changed=await env.DB.prepare(`UPDATE campaigns SET status='PROCESSING',preparation_complete=0,preparation_cursor='',
+    started_at=CURRENT_TIMESTAMP,recipient_count=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('DRAFT','SCHEDULED') RETURNING id`).bind(id).first();
+  if(!changed) {
+    const current=await env.DB.prepare('SELECT status FROM campaigns WHERE id=?').bind(id).first<{status:string}>();
+    if(current && ['PROCESSING','COMPLETED'].includes(current.status)) return json({ok:true,replayed:true,status:current.status});
+    return json({ok:false,error:'Кампания была отменена. Обновите список.'},409);
   }
-  // Recipient inserts are idempotent (INSERT OR IGNORE), so chunked batches are safe to retry.
-  for (let index = 0; index < statements.length; index += 100) await env.DB.batch(statements.slice(index, index + 100));
-  return json({ ok: true, recipientCount: recipients.results.length });
+  return json({ok:true,status:'PROCESSING',queued:true},202);
 };

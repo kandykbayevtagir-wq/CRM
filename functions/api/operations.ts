@@ -19,7 +19,7 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0,10) !== date) return badRequest("Некорректная дата");
   const { from, to } = localDayRange(date, timezone);
   const branchId = params.get("branchId") || "";
-  const [appointments, queue, failures, worker, obligations, waitlist, botConfiguration] = await Promise.all([
+  const [appointments, queue, failures, worker, obligations, waitlist, botConfiguration, attention, queueAge, automation] = await Promise.all([
     env.DB.prepare(`SELECT a.id, a.revision, ${isoColumn("a.starts_at")} AS startsAt, ${isoColumn("a.ends_at")} AS endsAt, a.status, a.total_amount AS amount,
       a.client_id AS clientId, c.full_name AS clientName, c.phone AS clientPhone, e.full_name AS employeeName, b.name AS branchName,
       (SELECT group_concat(s.name, ', ') FROM appointment_services aps JOIN services s ON s.id = aps.service_id WHERE aps.appointment_id = a.id) AS serviceName,
@@ -43,10 +43,22 @@ export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
       ORDER BY w.created_at, w.id LIMIT 30`).bind(...(branchId ? [branchId] : [])).all(),
     env.DB.prepare("SELECT status, completed_at AS completedAt, error_code AS errorCode FROM worker_runs WHERE worker_name = ?")
       .bind("telegram-config-" + APP_VERSION).first(),
+    env.DB.prepare(`SELECT 'task' AS kind,t.id,t.title,u.name AS responsible,t.due_date AS dueAt,t.client_id AS clientId
+      FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.status IN ('OPEN','IN_PROGRESS')
+        AND julianday(t.due_date)<=julianday('now') ${branchId?'AND (t.branch_id=? OR t.branch_id IS NULL)':''}
+      UNION ALL SELECT 'follow-up',f.id,c.full_name,u.name,f.recommended_date,f.client_id
+      FROM follow_ups f JOIN clients c ON c.id=f.client_id LEFT JOIN users u ON u.id=f.assigned_to
+      LEFT JOIN appointments a ON a.id=f.appointment_id WHERE f.status='OPEN' AND julianday(f.recommended_date)<=julianday('now')
+        ${branchId?'AND (a.branch_id=? OR a.branch_id IS NULL)':''}
+      ORDER BY dueAt LIMIT 20`).bind(...(branchId?[branchId,branchId]:[])).all(),
+    env.DB.prepare(`SELECT COALESCE(MAX((julianday('now')-julianday(created_at))*1440),0) AS oldestMinutes
+      FROM message_outbox WHERE status IN ('PENDING','PROCESSING')`).first(),
+    env.DB.prepare("SELECT status,completed_at AS completedAt FROM worker_runs WHERE worker_name='automation'").first(),
   ]);
   const workerCompletedAt = Date.parse(normalizeIso(worker?.completedAt));
   return json({ ok: true, date, timezone, items: appointments.results ?? [], queue: queue.results ?? [],
     failures: failures.results ?? [], waitlist: waitlist.results ?? [], worker, botConfiguration, overdueBalances: obligations,
+    attention:attention.results ?? [],queueAge,automation,
     workerStale: !["OK", "RUNNING"].includes(worker?.status ?? "") || !Number.isFinite(workerCompletedAt) || Date.now() - workerCompletedAt > 15 * 60000 });
 };
 
@@ -66,6 +78,7 @@ export const onRequestPost: PagesFunction<CrmEnv> = async (context) => {
       env.DB.prepare("INSERT INTO mutation_guards(id, passed) SELECT ?, EXISTS(SELECT 1 FROM client_waitlist WHERE id = ? AND status = ?)").bind(guardId,id,row.status),
       env.DB.prepare("DELETE FROM mutation_guards WHERE id = ?").bind(guardId),
       env.DB.prepare("UPDATE client_waitlist SET status = 'CANCELLED' WHERE id = ?").bind(id),
+      env.DB.prepare("UPDATE booking_holds SET status='RELEASED' WHERE waitlist_id=? AND status='HELD'").bind(id),
       auditStatement(env.DB,user,"waitlist",id,"CLOSE",{status:row.status},{status:"CANCELLED"}),
     ]);
     return json({ok:true});

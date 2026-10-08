@@ -124,6 +124,13 @@ try {
     await page.locator('#expense-form input[name="amount"]').fill("1000");
     await page.getByRole("button", { name: "Сохранить операцию", exact: true }).click();
     await page.getByText("Не удалось подключиться. Проверьте интернет и попробуйте ещё раз.", { exact: true }).waitFor();
+    await page.reload();
+    await page.getByText('Проверка операций: 1',{exact:true}).waitFor();
+    await page.getByRole("button", { name: "Добавить расход", exact: true }).click();
+    await page.locator('#expense-form input[name="title"]').fill("Тест восстановления");
+    await page.locator('#expense-form input[name="amount"]').fill("1000");
+    // Preserve the original business timestamp when recovering a submitted form.
+    await page.locator('#expense-form input[name="occurredAt"]').fill(expenseWrites[0].occurredAt);
     await page.getByRole("button", { name: "Сохранить операцию", exact: true }).click();
     await page.getByText("Операция добавлена в журнал", { exact: true }).waitFor();
     assert.equal(expenseWrites.length, 2);
@@ -151,6 +158,7 @@ try {
         path === "/api/client/catalog" ? { ok: true, user: clientUser, profile, archived: false, branches: [branch], services: [service] } :
         path === "/api/client/availability" ? { ok: true, items: [slot], next: null } :
         path === "/api/client/appointments" ? request.method() === "POST" ? { ok: true, id: "visit", changed: false } : { ok: true, items: [{ id: "visit", ...slot, amount: 18000, status: "SCHEDULED", serviceName: service.name, canCancel: true, checkInToken: "CODE", reviewId: null }] } :
+        path === "/api/client/waitlist" ? {ok:true,items:[{id:'waiter',status:'OFFERED',serviceName:service.name,branchName:branch.name,employeeName:'Диана',holdId:'hold',startsAt:slot.startsAt,expiresAt:new Date(Date.now()+600000).toISOString(),serviceId:service.id,branchId:branch.id,employeeId:slot.employeeId,appointmentId:null}]} :
         path === "/api/client/loyalty" ? { ok: true, account: { pointsBalance: 10, lifetimePoints: 10 }, transactions: [] } : { ok: true, items: [] };
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     });
@@ -196,6 +204,10 @@ try {
     assert.ok(writes.find((item) => item.path === "/api/client/appointments").body.idempotencyKey);
     await page.goto(base + "/client/appointments");
     assert.equal(await page.getByRole("link", { name: "В календарь", exact: true }).getAttribute("href"), "/api/client/calendar?appointmentId=visit");
+    await page.getByRole('button',{name:'Подтвердить время',exact:true}).click();
+    await page.getByText('Время подтверждено. Запись сохранена.',{exact:true}).waitFor();
+    assert.equal(writes.filter(item=>item.path==='/api/client/appointments').at(-1).body.holdId,'hold');
+    await noOverflow(page,'waitlist offer @ '+viewport.width);
     assert.deepEqual(errors, []);
     await context.close();
     console.log("Client UI verified: " + viewport.width + "px; cabinet, profile with marketing consent, contacts, booking, calendar; no runtime errors or overflow");

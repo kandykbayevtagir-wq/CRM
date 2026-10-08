@@ -32,7 +32,28 @@ export async function runNotifications(env: CrmEnv) {
   if (!claimed) return;
   try {
     await enqueueDueReminders(env);
-    await processOutbox(env);
+    if (env.JOBS) {
+      let jobsFailed=false;
+      for (const path of ['/schedule','/waitlist','/waitlist']) {
+        try {
+          const response=await env.JOBS.fetch('https://internal'+path,{method:'POST'});
+          if(!response.ok) jobsFailed=true;
+        } catch {jobsFailed=true;}
+      }
+      await env.DB.prepare(`INSERT INTO worker_runs(worker_name,started_at,completed_at,status,error_code)
+        VALUES('automation',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?,?) ON CONFLICT(worker_name) DO UPDATE SET
+        started_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP,status=excluded.status,error_code=excluded.error_code`)
+        .bind(jobsFailed?'FAILED':'OK',jobsFailed?'AUTOMATION_UNAVAILABLE':null).run();
+    }
+    if (env.DELIVERY) {
+      const deadline=Date.now()+90000;
+      for(let pass=0;pass<8 && Date.now()<deadline;pass++) {
+        const response=await env.DELIVERY.fetch('https://internal/drain',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:env.TELEGRAM_BOT_TOKEN})});
+        if(!response.ok) throw new Error('Delivery service unavailable');
+        const result=await response.json() as {processed:number};
+        if(!result.processed) break;
+      }
+    } else await processOutbox(env);
     // Bot menu configuration is independent from delivery and is retried next cron.
     try { await configureBot(env); } catch {
       await env.DB.prepare("INSERT INTO worker_runs(worker_name, started_at, completed_at, status, error_code) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'FAILED', 'BOT_CONFIG_UNAVAILABLE') ON CONFLICT(worker_name) DO UPDATE SET completed_at = CURRENT_TIMESTAMP, status = 'FAILED', error_code = 'BOT_CONFIG_UNAVAILABLE'")

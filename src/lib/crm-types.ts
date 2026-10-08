@@ -156,6 +156,8 @@ export type SettingsResponse = {
     workingDays: string;
     cancellationWindowHours: number;
     loyaltyPointsPer1000: number;
+    dailySummaryEnabled?:number;
+    dailySummaryHour?:number;
   };
   branches: Branch[];
 };

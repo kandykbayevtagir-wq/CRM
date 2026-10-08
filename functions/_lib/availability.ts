@@ -20,6 +20,7 @@ type AvailabilityParams = {
   serviceId: string;
   employeeId?: string;
   excludeAppointmentId?: string;
+  excludeHoldId?: string;
 };
 
 type TimeRange = { startsTime: string; endsTime: string; breakStartTime?: string | null; breakEndTime?: string | null };
@@ -35,7 +36,8 @@ function dayOfWeek(date: string) {
 }
 
 function isValidDate(value: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T12:00:00.000Z`).getTime());
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T12:00:00.000Z`).getTime())
+    && new Date(`${value}T12:00:00.000Z`).toISOString().slice(0,10)===value;
 }
 
 export async function findAvailableSlots(db: D1Database, params: AvailabilityParams): Promise<AvailabilitySlot[]> {
@@ -74,7 +76,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
   const { from: dateStart, to: dateEnd } = localDayRange(params.date, timezone);
   const employeeIds = employees.results.map((employee) => employee.id);
   const placeholders = employeeIds.map(() => "?").join(",");
-  const [appointments, timeOff, schedules, closures, reservations] = await Promise.all([
+  const [appointments, timeOff, schedules, closures, reservations, holds] = await Promise.all([
     db.prepare(`
       SELECT a.id, a.employee_id AS employeeId, strftime('%Y-%m-%dT%H:%M:%fZ', a.starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', a.ends_at) AS endsAt,
         COALESCE(SUM(s.duration_minutes * aps.quantity), 60) AS durationMinutes
@@ -89,6 +91,10 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
     db.prepare(`SELECT employee_id AS employeeId, starts_time AS startsTime, ends_time AS endsTime, break_start_time AS breakStartTime, break_end_time AS breakEndTime FROM employee_schedules WHERE employee_id IN (${placeholders}) AND day_of_week = ? AND is_active = 1`).bind(...employeeIds, day).all<{ employeeId: string; startsTime: string; endsTime: string; breakStartTime: string | null; breakEndTime: string | null }>(),
     db.prepare("SELECT branch_id AS branchId, strftime('%Y-%m-%dT%H:%M:%fZ', starts_at) AS startsAt, strftime('%Y-%m-%dT%H:%M:%fZ', ends_at) AS endsAt FROM branch_closures WHERE (branch_id = ? OR branch_id IS NULL) AND julianday(starts_at) < julianday(?) AND julianday(ends_at) > julianday(?)").bind(params.branchId, dateEnd, dateStart).all<{ branchId: string | null; startsAt: string; endsAt: string }>(),
     db.prepare(`SELECT employee_id AS employeeId, slot_start AS slotStart FROM appointment_slot_reservations WHERE employee_id IN (${placeholders}) AND julianday(slot_start) >= julianday(?) AND julianday(slot_start) < julianday(?) ${params.excludeAppointmentId ? "AND appointment_id <> ?" : ""}`).bind(...employeeIds, dateStart, dateEnd, ...(params.excludeAppointmentId ? [params.excludeAppointmentId] : [])).all<{ employeeId: string; slotStart: string }>(),
+    db.prepare(`SELECT employee_id AS employeeId, starts_at AS startsAt, ends_at AS endsAt FROM booking_holds
+      WHERE employee_id IN (${placeholders}) AND status='HELD' AND julianday(expires_at)>julianday('now')
+        AND julianday(starts_at)<julianday(?) AND julianday(ends_at)>julianday(?) ${params.excludeHoldId ? 'AND id <> ?' : ''}`)
+      .bind(...employeeIds,dateEnd,dateStart,...(params.excludeHoldId?[params.excludeHoldId]:[])).all<{employeeId:string;startsAt:string;endsAt:string}>(),
   ]);
 
   const schedulesByEmployee = new Map<string, TimeRange>();
@@ -129,6 +135,7 @@ export async function findAvailableSlots(db: D1Database, params: AvailabilityPar
       const startMs = new Date(startsAt).getTime();
       const endMs = new Date(endsAt).getTime();
       if (startMs <= now + 5 * 60_000) continue;
+      if ((holds.results ?? []).some(h=>h.employeeId===employee.id && Date.parse(h.startsAt)<endMs && Date.parse(h.endsAt)>startMs)) continue;
       if ((closures.results ?? []).some((closure) => new Date(closure.startsAt).getTime() < endMs && new Date(closure.endsAt).getTime() > startMs)) continue;
       if (employeeTimeOff.some((item) => new Date(item.startsAt).getTime() < endMs && new Date(item.endsAt).getTime() > startMs)) continue;
       if (range.breakStartTime && range.breakEndTime) {

@@ -1,0 +1,8 @@
+{
+  "$schema":"./node_modules/wrangler/config-schema.json",
+  "name":"podologymk-crm-staging",
+  "compatibility_date":"2026-08-08",
+  "pages_build_output_dir":"./out",
+  "vars":{"APP_ENV":"staging","MINI_APP_URL":"https://podologymk-crm-staging.pages.dev"},
+  "d1_databases":[{"binding":"DB","database_name":"podologymk_crm_staging","database_id":"22525fb5-8a62-4e8d-a15c-a20e07042b36","migrations_dir":"./migrations"}]
+}

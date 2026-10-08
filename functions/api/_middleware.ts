@@ -4,7 +4,7 @@ import { isStaffTelegramAllowed } from "../../src/lib/auth/bootstrap";
 import { HttpError, errorResponse, validateRequestOrigin } from "../_lib/security";
 
 // Logout must work without a valid session so a stale or revoked cookie can always be cleared.
-const publicPaths = new Set(["/api/health", "/api/telegram/health", "/api/telegram/auth", "/api/telegram/webhook", "/api/auth/logout"]);
+const publicPaths = new Set(["/api/health", "/api/readiness", "/api/telegram/health", "/api/telegram/auth", "/api/telegram/webhook", "/api/auth/logout"]);
 
 export const onRequest: PagesFunction<CrmEnv> = async (context) => {
   const { request, env } = context;

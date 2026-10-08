@@ -12,6 +12,7 @@ import type { AvailabilityResponse, AvailabilitySlot, Branch, ClientAppointment,
 import { formatCurrency, formatDateTime, initials, parseDate } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 import { PhoneInput } from "@/components/phone-input";
+import { ClientWaitlist } from '@/components/client-waitlist';
 
 type ClientProfile = { id: string; fullName: string; phone: string; email: string | null; notes?: string | null; pointsBalance?: number };
 type ProfileResponse = { ok: true; user: { name: string; phone: string | null; notificationsAllowed: number }; profile: ClientProfile | null; archived?: boolean; consents: Array<{ kind: string; version: string }> };
@@ -251,7 +252,7 @@ export function ClientBookingView() {
     setWaitlistPending(true);
     setNotice(null);
     try {
-      await apiFetch("/api/client/waitlist", { method: "POST", body: { serviceId, branchId, preferredDate: date } });
+      await apiFetch("/api/client/waitlist", { method: "POST", body: { serviceId, branchId, employeeId:employeeId || null, preferredDate: date } });
       setNotice(`Вы в листе ожидания на ${dateLabel(date)}. Администратор увидит заявку и свяжется с вами, чтобы согласовать время.`);
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred?.("success");
     } catch (cause) {
@@ -320,10 +321,18 @@ export function ClientAppointmentsView() {
   const cancelled = items.filter((item) => statusKey(item.status) === "cancelled").sort((a, b) => b.startsAt.localeCompare(a.startsAt));
   const past = items.filter((item) => statusKey(item.status) !== "cancelled" && !upcoming.some((candidate) => candidate.id === item.id)).sort((a, b) => b.startsAt.localeCompare(a.startsAt));
 
+  async function wantEarlier(item:ClientAppointment) {
+    try {
+      await apiFetch('/api/client/waitlist',{method:'POST',body:{serviceId:item.serviceId,branchId:item.branchId,employeeId:item.employeeId,appointmentId:item.id}});
+      setNotice('Добавили в лист ожидания. Если появится более раннее время, бот предложит его.');
+      dispatchCrmEvent('crm:data-changed');
+    } catch(error) {setNotice(error instanceof Error?error.message:'Не удалось создать ожидание');}
+  }
+
   function renderAppointment(item: ClientAppointment) {
     const status = statusKey(item.status);
     const isCancelTarget = cancelTarget?.id === item.id;
-    return <article className="client-appointment-card" id={`appointment-${item.id}`} key={item.id}><div className="client-appointment-top"><div><span className="client-appointment-date">{formatDateTime(item.startsAt)}</span><strong>{item.serviceName ?? "Приём в podologymk"}</strong></div><StatusPill status={status} /></div><div className="client-appointment-meta"><span><UserRound size={14} /> {item.employeeName ?? "Специалист"}</span><span><MapPin size={14} /> {item.branchName ?? "Филиал"}</span><Amount value={Number(item.amount || 0)} /></div>{item.checkInToken && ["scheduled", "confirmed"].includes(status) ? <div className="client-checkin-code"><span>Код для администратора</span><strong>{item.checkInToken}</strong></div> : null}{isCancelTarget ? <div className="client-cancel-confirm"><strong>Отменить эту запись?</strong><span>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</span><div><button type="button" className="button button-ghost" onClick={() => setCancelTarget(null)} disabled={cancelling}>Оставить запись</button><button type="button" className="button button-danger" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Отменяем…" : "Да, отменить"}</button></div></div> : <div className="client-appointment-actions">{["scheduled", "confirmed"].includes(status) ? <a href={`/api/client/calendar?appointmentId=${encodeURIComponent(item.id)}`} className="button button-ghost" download="podologymk-visit.ics">В календарь</a> : null}{item.canCancel ? <><Link href={`/client/book?reschedule=${item.id}`} className="button button-secondary">Перенести</Link><button type="button" className="button button-ghost danger-text" onClick={() => { setNotice(null); setCancelTarget(item); }}>Отменить</button></> : null}{status === "completed" && !item.reviewId ? <Link href={`/client/reviews?appointment=${item.id}`} className="button button-ghost"><Star size={14} /> Оставить отзыв</Link> : null}{status === "completed" ? <Link href={bookAgainHref(item)} className="button button-ghost"><RefreshCw size={14} /> Повторить запись</Link> : null}</div>}</article>;
+    return <article className="client-appointment-card" id={`appointment-${item.id}`} key={item.id}><div className="client-appointment-top"><div><span className="client-appointment-date">{formatDateTime(item.startsAt)}</span><strong>{item.serviceName ?? "Приём в podologymk"}</strong></div><StatusPill status={status} /></div><div className="client-appointment-meta"><span><UserRound size={14} /> {item.employeeName ?? "Специалист"}</span><span><MapPin size={14} /> {item.branchName ?? "Филиал"}</span><Amount value={Number(item.amount || 0)} /></div>{item.checkInToken && ["scheduled", "confirmed"].includes(status) ? <div className="client-checkin-code"><span>Код для администратора</span><strong>{item.checkInToken}</strong></div> : null}{isCancelTarget ? <div className="client-cancel-confirm"><strong>Отменить эту запись?</strong><span>{formatDateTime(item.startsAt)} · {item.serviceName ?? "Приём"}</span><div><button type="button" className="button button-ghost" onClick={() => setCancelTarget(null)} disabled={cancelling}>Оставить запись</button><button type="button" className="button button-danger" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Отменяем…" : "Да, отменить"}</button></div></div> : <div className="client-appointment-actions">{["scheduled", "confirmed"].includes(status) ? <a href={`/api/client/calendar?appointmentId=${encodeURIComponent(item.id)}`} className="button button-ghost" download="podologymk-visit.ics">В календарь</a> : null}{item.canCancel ? <><button type="button" className="button button-ghost" onClick={()=>void wantEarlier(item)}>Хочу попасть раньше</button><Link href={`/client/book?reschedule=${item.id}`} className="button button-secondary">Перенести</Link><button type="button" className="button button-ghost danger-text" onClick={() => { setNotice(null); setCancelTarget(item); }}>Отменить</button></> : null}{status === "completed" && !item.reviewId ? <Link href={`/client/reviews?appointment=${item.id}`} className="button button-ghost"><Star size={14} /> Оставить отзыв</Link> : null}{status === "completed" ? <Link href={bookAgainHref(item)} className="button button-ghost"><RefreshCw size={14} /> Повторить запись</Link> : null}</div>}</article>;
   }
 
   function renderGroup(title: string, group: ClientAppointment[]) {
@@ -331,7 +340,7 @@ export function ClientAppointmentsView() {
     return <section className="client-appointment-group"><h2>{title}</h2><div className="client-appointment-list">{group.map(renderAppointment)}</div></section>;
   }
 
-  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><div className="client-greeting compact"><p className="client-eyebrow">История</p><h1>Мои записи</h1><p>Предстоящие визиты, история и быстрый повтор записи.</p></div>{notice ? <div className="client-notice client-notice-success" role="status"><span>{notice}</span>{rebookItem ? <Link href={bookAgainHref(rebookItem)} className="button button-secondary">Записаться снова</Link> : null}</div> : null}{items.length === 0 ? <EmptyState title="Записей пока нет" description="Выберите услугу и удобное время для первого визита." action={<Link href="/client/book" className="button button-primary">Записаться</Link>} /> : <>{renderGroup("Предстоящие", upcoming)}{renderGroup("Прошедшие", past)}{renderGroup("Отменённые", cancelled)}</>}</>;
+  return <><Link href="/" className="client-back-link"><ChevronLeft size={17} /> В кабинет</Link><div className="client-greeting compact"><p className="client-eyebrow">История</p><h1>Мои записи</h1><p>Предстоящие визиты, история и быстрый повтор записи.</p></div>{notice ? <div className="client-notice client-notice-success" role="status"><span>{notice}</span>{rebookItem ? <Link href={bookAgainHref(rebookItem)} className="button button-secondary">Записаться снова</Link> : null}</div> : null}{items.length === 0 ? <EmptyState title="Записей пока нет" description="Выберите услугу и удобное время для первого визита." action={<Link href="/client/book" className="button button-primary">Записаться</Link>} /> : <>{renderGroup("Предстоящие", upcoming)}{renderGroup("Прошедшие", past)}{renderGroup("Отменённые", cancelled)}</>}<ClientWaitlist /></>;
 }
 
 export function ClientLoyaltyView() {

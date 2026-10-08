@@ -4,6 +4,10 @@
   "main": "./workers/notifications.ts",
   "compatibility_date": "2026-08-08",
   "vars": { "MINI_APP_URL": "https://podologymk-crm.pages.dev" },
+  "services": [
+    {"binding":"JOBS","service":"podologymk-automation"},
+    {"binding":"DELIVERY","service":"podologymk-delivery"}
+  ],
   "d1_databases": [
     {
       "binding": "DB",

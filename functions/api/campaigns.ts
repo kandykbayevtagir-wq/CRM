@@ -1,6 +1,7 @@
 import { forbidden, getSessionUser, hasCrmPermission, unauthorized } from "../_lib/auth";
 import type { CrmEnv } from "../_lib/env";
-import { badRequest, dateValue, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { badRequest, json, newId, optionalString, readJson, stringValue } from "../_lib/http";
+import { organizationTimezone,zonedDateValue } from '../_lib/dates';
 
 export const onRequestGet: PagesFunction<CrmEnv> = async ({ request, env }) => {
   const user = await getSessionUser(request, env.DB);
@@ -24,6 +25,8 @@ export const onRequestPost: PagesFunction<CrmEnv> = async ({ request, env }) => 
   const segmentId = optionalString(body, "segmentId") || null;
   if (segmentId && !await env.DB.prepare("SELECT id FROM client_segments WHERE id = ? AND is_active = 1").bind(segmentId).first()) return badRequest("Сегмент не найден");
   const id = newId();
-  await env.DB.prepare("INSERT INTO campaigns (id, name, segment_id, message, scheduled_at, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, name, segmentId, message, dateValue(body, "scheduledAt") || null, dateValue(body, "scheduledAt") ? "SCHEDULED" : "DRAFT", user.id).run();
+  const scheduledAt=zonedDateValue(body,'scheduledAt',await organizationTimezone(env.DB));
+  if(body.scheduledAt && !scheduledAt) return badRequest('Некорректная дата запуска');
+  await env.DB.prepare("INSERT INTO campaigns (id, name, segment_id, message, scheduled_at, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, name, segmentId, message, scheduledAt || null, scheduledAt ? "SCHEDULED" : "DRAFT", user.id).run();
   return json({ ok: true, id }, 201);
 };

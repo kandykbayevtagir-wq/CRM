@@ -24,7 +24,8 @@ export const onRequestPatch: PagesFunction<CrmEnv> = async ({ request, env, para
   if (!existing) return notFound("Кампания не найдена");
   const body = await readJson(request);
   const status = stringValue(body, "status", existing.status).toUpperCase();
-  if (!["DRAFT", "SCHEDULED", "CANCELLED"].includes(status) || ["PROCESSING", "COMPLETED"].includes(existing.status)) return badRequest("Кампания уже запущена или имеет некорректный статус");
-  await env.DB.prepare("UPDATE campaigns SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(status, id).run();
+  if (!["DRAFT", "SCHEDULED", "CANCELLED"].includes(status) || existing.status==='COMPLETED' || (existing.status==='CANCELLED' && status!=='CANCELLED') || (existing.status==='PROCESSING' && status!=='CANCELLED')) return badRequest("Кампания уже запущена или имеет некорректный статус");
+  const changed=await env.DB.prepare("UPDATE campaigns SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (status=? OR (?='CANCELLED' AND status='PROCESSING')) RETURNING id").bind(status, id,existing.status,status).first();
+  if(!changed) return json({ok:false,message:'Статус кампании изменился. Обновите список.'},409);
   return json({ ok: true });
 };

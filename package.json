@@ -1,6 +1,6 @@
 {
   "name": "podologymk-crm",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "engines": {
     "node": ">=22.13"
@@ -22,6 +22,7 @@
     "pretest": "npm run db:generate",
     "test:watch": "vitest",
     "qa:ui": "node scripts/ui-smoke.mjs",
+    "qa:api": "node scripts/api-e2e.mjs",
     "lint": "eslint . --max-warnings=0",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
