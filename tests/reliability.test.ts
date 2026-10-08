@@ -162,6 +162,18 @@ describe('waitlist races and stale resources', () => {
     seedVisit(sqlite,'original','SCHEDULED','2030-01-09T04:00:00Z');waiter('branch',null,'original');const e=await env();
     race(e,()=>seedPayment(sqlite,'original',10000,new Date().toISOString()));await offerWaitlistSlot(e);expect(hold()).toBeUndefined();
   });
+  it('rejects a no-longer-earlier slot if the original is concurrently rescheduled',async()=>{
+    seedVisit(sqlite,'original','SCHEDULED','2030-01-09T04:00:00Z');waiter('branch',null,'original');const e=await env();
+    race(e,"UPDATE appointments SET starts_at='2030-01-06T04:00:00Z',ends_at='2030-01-06T05:00:00Z' WHERE id='original'");
+    await offerWaitlistSlot(e);expect(hold()).toBeUndefined();
+  });
+  it('suppresses an offer that stopped being earlier after the original moved',async()=>{
+    seedVisit(sqlite,'original','SCHEDULED','2030-01-09T04:00:00Z');waiter('branch',null,'original');const e=await env();
+    await offerWaitlistSlot(e);expect(hold()).toBeTruthy();
+    sqlite.exec("UPDATE appointments SET starts_at='2030-01-06T04:00:00Z',ends_at='2030-01-06T05:00:00Z' WHERE id='original'");
+    const send=vi.fn(async()=>Response.json({ok:true,result:{message_id:1}}));vi.stubGlobal('fetch',send);
+    await processOutbox(e);expect(send).not.toHaveBeenCalled();expect(hold()).toBeUndefined();
+  });
   it('rejects concurrent payment during reschedule without moving the original',async()=>{
     seedVisit(sqlite,'original','SCHEDULED','2030-01-09T04:00:00Z');
     const {context}=await requestContext(db,'/api/client/appointments','POST',{appointmentId:'original',serviceId:'service',branchId:'branch',employeeId:'employee',startsAt:'2030-01-07T04:00:00.000Z'},'user');

@@ -20,13 +20,14 @@ Audit date: 2026-10-09, Asia/Aqtobe (2026-10-08 UTC). This is a patch PR, not au
 | Large employee lists could exceed D1's bind-parameter limit. | Unique employee IDs in a single JSON bind, tested with over 100 qualified employees. |
 | Client/resource archival or service-assignment removal after slot search could still commit an offer. | Atomic mutation guard rechecks client/service/branch/employee, relationships, calendar, user opt-in and original appointment eligibility. |
 | Booking/reschedule could race archival or payment of the original appointment. | Recheck resources, calendar, unpaid status and cancellation window inside the booking batch; reject without booking/audit side effects. |
+| An earlier-time offer could become later than a concurrently moved original appointment. | Recheck original appointment linkage and current start time at offer commit and delivery; suppress and release stale offers. |
 | Telegram offers checked only hold ownership/expiry, not current resources/calendar. | Shared eligibility revalidated just before delivery; invalid message cancellation releases the hold and restores queue progress. |
 | RUNNING worker could appear ready using a recent previous completion after its lease expired. | RUNNING requires a current lease and recent start; future/invalid timestamps are not healthy. |
 | Private service fetch/body reads could hang beyond coordinator lease. | Bounded calls/body reads, overall budget, ownership checks and lease-conditioned automation status writes. Missing automation binding is recorded as failure. |
 | A cancelled purchase could be resurrected by concurrent receipt. | Status rechecked inside receipt transaction. |
 | A multi-line receipt could partially commit while returning conflict. | All remaining quantities are guarded before any stock write; stale line rolls back all new receipt/audit effects. |
 
-The initial reliability suite reproduced 12 failures before fixes. Two additional purchase race tests separately failed against the pre-fix implementation. Assertions were retained; fixture/type errors found during development were corrected without reducing coverage.
+The initial reliability suite reproduced 12 failures before fixes. Two purchase race tests and two original-reschedule offer tests separately failed against their pre-fix implementations. Assertions were retained; fixture/type errors found during development were corrected without reducing coverage.
 
 ## Waitlist lifecycle and concurrency
 
@@ -85,7 +86,7 @@ Local validation after a clean npm ci:
 | npm audit --audit-level=high | Passed; 0 known vulnerabilities including tooling. |
 | npm run db:generate / db:validate | Passed. |
 | npm run typecheck / lint | Passed. |
-| npm test | 203 passing tests in 14 files; 78 added to the v0.9.0 baseline of 125. |
+| npm test | 205 passing tests in 14 files; 80 added to the v0.9.0 baseline of 125. |
 | npm run build:pages | Passed; static export generated. |
 | npm run qa:api | Passed; clean 0001–0014 D1 chain, actual Pages Functions/private automation execution and concurrent offers. |
 | npm run qa:ui | Passed; 22 staff pages and client flows at 1440px and 390px, no runtime errors or horizontal overflow. |

@@ -68,13 +68,13 @@ export async function offerWaitlistSlot(env: CrmEnv) {
         WITH candidate AS (SELECT ? AS client_id,? AS service_id,? AS branch_id,? AS employee_id,
           ? AS starts_at,? AS ends_at,? AS day,? AS start_time,? AS end_time)
         SELECT ?, EXISTS(SELECT 1 FROM client_waitlist w CROSS JOIN candidate c WHERE w.id=? AND w.status='ACTIVE'
-          AND w.client_id=c.client_id AND w.service_id=c.service_id
+          AND w.client_id=c.client_id AND w.service_id=c.service_id AND w.appointment_id IS ?
           AND (w.branch_id IS NULL OR w.branch_id=c.branch_id) AND (w.employee_id IS NULL OR w.employee_id=c.employee_id)
-          AND ${eligibleWaiter('w')} AND ${activeBookingResources('c.client_id','c.service_id','c.branch_id','c.employee_id')}
+          AND ${eligibleWaiter('w','c.starts_at')} AND ${activeBookingResources('c.client_id','c.service_id','c.branch_id','c.employee_id')}
           AND ${eligibleCalendar('c')}
           AND EXISTS(SELECT 1 FROM users u WHERE u.client_id=w.client_id AND u.telegram_id=? AND u.active=1 AND u.notifications_allowed=1))`)
         .bind(waiter.clientId,waiter.serviceId,slot.branchId,slot.employeeId,slot.startsAt,slot.endsAt,
-          ...calendarValues(slot.startsAt,slot.endsAt,timezone),guard,waiter.id,waiter.telegramId),
+          ...calendarValues(slot.startsAt,slot.endsAt,timezone),guard,waiter.id,waiter.appointmentId,waiter.telegramId),
       env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(guard),
       env.DB.prepare(`INSERT INTO booking_holds(id,client_id,branch_id,employee_id,starts_at,ends_at,expires_at,service_id,waitlist_id,appointment_id)
         VALUES(?,?,?,?,?,?,datetime('now','+10 minutes'),?,?,?)`).bind(holdId,waiter.clientId,slot.branchId,slot.employeeId,slot.startsAt,slot.endsAt,waiter.serviceId,waiter.id,waiter.appointmentId),

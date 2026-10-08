@@ -9,12 +9,13 @@ export function activeBookingResources(client: string, service: string, branch: 
       AND active=1 AND (branch_id IS NULL OR branch_id=${branch}))`;
 }
 
-export function eligibleWaiter(w: string) {
+export function eligibleWaiter(w: string, startsAt?: string) {
   return `EXISTS(SELECT 1 FROM clients WHERE id=${w}.client_id AND is_active=1)
     AND (${w}.appointment_id IS NULL OR EXISTS(SELECT 1 FROM appointments a WHERE a.id=${w}.appointment_id
       AND a.client_id=${w}.client_id AND a.status IN ('SCHEDULED','CONFIRMED')
       AND julianday(a.starts_at)>julianday('now','+'||COALESCE((SELECT cancellation_window_hours FROM organization_settings WHERE id=1),2)||' hours')
-      AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.appointment_id=a.id)))`;
+      AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.appointment_id=a.id)
+      ${startsAt ? 'AND julianday('+startsAt+')<julianday(a.starts_at)' : ''}))`;
 }
 
 export function validHold(h: string) {
@@ -24,7 +25,7 @@ export function validHold(h: string) {
     AND EXISTS(SELECT 1 FROM client_waitlist w WHERE w.id=${h}.waitlist_id AND w.status='OFFERED'
       AND w.client_id=${h}.client_id AND w.service_id=${h}.service_id AND w.appointment_id IS ${h}.appointment_id
       AND (w.branch_id IS NULL OR w.branch_id=${h}.branch_id)
-      AND (w.employee_id IS NULL OR w.employee_id=${h}.employee_id) AND ${eligibleWaiter('w')})
+      AND (w.employee_id IS NULL OR w.employee_id=${h}.employee_id) AND ${eligibleWaiter('w',h+'.starts_at')})
     AND NOT EXISTS(SELECT 1 FROM employee_time_off t WHERE t.employee_id=${h}.employee_id
       AND julianday(t.starts_at)<julianday(${h}.ends_at) AND julianday(t.ends_at)>julianday(${h}.starts_at))
     AND NOT EXISTS(SELECT 1 FROM branch_closures b WHERE (b.branch_id IS NULL OR b.branch_id=${h}.branch_id)
