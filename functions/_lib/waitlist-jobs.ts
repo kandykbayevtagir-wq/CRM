@@ -1,9 +1,15 @@
 import { findAvailableSlots } from './availability';
 import { localDate } from '../../src/lib/appointments/schedule';
 import type { CrmEnv } from './env';
+import { HttpError } from './security';
 
 export async function expireOffers(env: CrmEnv) {
   await env.DB.batch([
+    env.DB.prepare(`UPDATE client_waitlist SET status='EXPIRED' WHERE status IN ('ACTIVE','OFFERED') AND (
+      NOT EXISTS(SELECT 1 FROM clients c WHERE c.id=client_waitlist.client_id AND c.is_active=1)
+      OR (service_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM services s WHERE s.id=client_waitlist.service_id AND s.is_active=1))
+      OR (branch_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM branches b WHERE b.id=client_waitlist.branch_id AND b.is_active=1))
+      OR (employee_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM employees e WHERE e.id=client_waitlist.employee_id AND e.is_active=1)))`),
     env.DB.prepare(`UPDATE client_waitlist SET status='CANCELLED' WHERE status IN ('ACTIVE','OFFERED')
       AND appointment_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM appointments a WHERE a.id=client_waitlist.appointment_id
         AND a.client_id=client_waitlist.client_id AND a.status IN ('SCHEDULED','CONFIRMED')
@@ -11,7 +17,9 @@ export async function expireOffers(env: CrmEnv) {
         AND NOT EXISTS(SELECT 1 FROM payments p WHERE p.appointment_id=a.id))`),
     env.DB.prepare(`UPDATE booking_holds SET status='EXPIRED' WHERE status='HELD' AND
       (julianday(expires_at)<=julianday('now') OR julianday(starts_at)<=julianday('now','+5 minutes')
-        OR NOT EXISTS(SELECT 1 FROM client_waitlist w JOIN clients c ON c.id=w.client_id WHERE w.id=waitlist_id AND w.status='OFFERED' AND c.is_active=1))`),
+        OR NOT EXISTS(SELECT 1 FROM client_waitlist w JOIN clients c ON c.id=w.client_id WHERE w.id=waitlist_id AND w.status='OFFERED' AND c.is_active=1)
+        OR NOT EXISTS(SELECT 1 FROM services s JOIN branches b ON b.id=booking_holds.branch_id JOIN employees e ON e.id=booking_holds.employee_id
+          WHERE s.id=booking_holds.service_id AND s.is_active=1 AND b.is_active=1 AND e.is_active=1))`),
     env.DB.prepare(`UPDATE client_waitlist SET status='ACTIVE',retry_after=datetime('now','+1 minute') WHERE status='OFFERED'
       AND NOT EXISTS(SELECT 1 FROM booking_holds h WHERE h.waitlist_id=client_waitlist.id AND h.status='HELD')`),
   ]);
@@ -46,7 +54,13 @@ export async function offerWaitlistSlot(env: CrmEnv) {
   const offset=waiter.preferredDate?0:waiter.scanOffset;
   const date=waiter.preferredDate || new Date(Date.parse(today+'T12:00:00Z')+offset*86400000).toISOString().slice(0,10);
   if (date<today) {await env.DB.prepare("UPDATE client_waitlist SET status='EXPIRED' WHERE id=? AND status='ACTIVE'").bind(waiter.id).run();return;}
-  const slots=await findAvailableSlots(env.DB,{date,branchId,serviceId:waiter.serviceId,employeeId:waiter.employeeId || undefined});
+  let slots;
+  try {slots=await findAvailableSlots(env.DB,{date,branchId,serviceId:waiter.serviceId,employeeId:waiter.employeeId || undefined});}
+  catch(error) {
+    // A resource may be archived after selecting the waiter. The next pass expires it.
+    if(error instanceof HttpError && error.status===404) return;
+    throw error;
+  }
   const slot=slots.find(s=>Date.parse(s.startsAt)>Date.now()+15*60000 && (!waiter.beforeAt || Date.parse(s.startsAt)<Date.parse(waiter.beforeAt))
     && !(attempted.results ?? []).some(h=>h.startsAt===s.startsAt && h.employeeId===s.employeeId));
   if (!waiter.preferredDate) await env.DB.prepare('UPDATE client_waitlist SET scan_offset=? WHERE id=?').bind((offset+1)%14,waiter.id).run();
@@ -54,7 +68,10 @@ export async function offerWaitlistSlot(env: CrmEnv) {
   const holdId=crypto.randomUUID(); const guard=crypto.randomUUID();
   try {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM client_waitlist WHERE id=? AND status='ACTIVE')").bind(guard,waiter.id),
+      env.DB.prepare(`INSERT INTO mutation_guards(id,passed) SELECT ?, EXISTS(SELECT 1 FROM client_waitlist WHERE id=? AND status='ACTIVE')
+        AND EXISTS(SELECT 1 FROM services WHERE id=? AND is_active=1)
+        AND EXISTS(SELECT 1 FROM branches WHERE id=? AND is_active=1)
+        AND EXISTS(SELECT 1 FROM employees WHERE id=? AND is_active=1)`).bind(guard,waiter.id,waiter.serviceId,branchId,slot.employeeId),
       env.DB.prepare('DELETE FROM mutation_guards WHERE id=?').bind(guard),
       env.DB.prepare(`INSERT INTO booking_holds(id,client_id,branch_id,employee_id,starts_at,ends_at,expires_at,service_id,waitlist_id,appointment_id)
         VALUES(?,?,?,?,?,?,datetime('now','+10 minutes'),?,?,?)`).bind(holdId,waiter.clientId,branchId,slot.employeeId,slot.startsAt,slot.endsAt,waiter.serviceId,waiter.id,waiter.appointmentId),
